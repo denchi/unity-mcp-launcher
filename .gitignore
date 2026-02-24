@@ -1,0 +1,7 @@
+.build/
+.swiftpm/
+.DS_Store
+.pycache/
+__pycache__/
+*.pyc
+hub_service/hub_service/
