@@ -1,205 +1,126 @@
-# Unity MCP Hub (macOS app)
+# Unity MCP Launcher
 
-Native macOS SwiftUI app that behaves like a lightweight Unity Hub:
-
-- Add Unity projects to a local registry
-- See projects in a searchable list
-- Inspect project details and health
-- Launch Unity for a selected project (normal or headless)
-
-This is the UI/control-plane shell for your broader "hub + per-project agent" system.
-
-## Hub backend (FastAPI + SQLite)
-
-The repository now also includes a control-plane backend in:
-
-`/Users/denis/dev/unity-mcp-launcher/hub_service`
+Unity MCP Launcher is a macOS app that manages Unity projects and launches them in a hub-based MCP workflow.
 
 It provides:
 
-- Project registry
-- Session selection + TTL leases
-- Unity launch trigger endpoint
-- Agent registration + heartbeat
-- MCP-style request forwarding to selected project agent
+- A desktop UI to register Unity projects
+- Unity version detection from `ProjectSettings/ProjectVersion.txt`
+- Local Unity installation management (detect, add, remove from hub list)
+- Session-based launch and lifecycle control through a local hub service
+- Optional MCP gateway to expose tools to Codex/Cursor/other MCP clients
 
-### Install backend deps
+## Components
 
-```bash
-cd /Users/denis/dev/unity-mcp-launcher/hub_service
-python3 -m pip install -r requirements.txt
-```
+This repository includes:
 
-### Run backend
+- `Sources/UnityMCPHubApp` - macOS SwiftUI desktop app
+- `hub_service` - FastAPI + SQLite backend used by the app
+- `hub_mcp_gateway` - MCP server that forwards to the active hub session
 
-```bash
-cd /Users/denis/dev/unity-mcp-launcher/hub_service
-python3 run.py
-```
+External component required on the Unity side:
 
-Defaults:
-
-- `HUB_HOST=127.0.0.1`
-- `HUB_PORT=8787`
-- `HUB_DB_PATH=./hub_service/hub.db`
-- `HUB_AUTH_TOKEN=dev-shared-secret`
-- default pre-launch UPM patch:
-  - `HUB_UNITY_AGENT_PACKAGE_NAME=com.deathbygravitystudio.gptactions`
-  - `HUB_UNITY_AGENT_PACKAGE_GIT_URL=https://github.com/denchi/UnityGPTActions.git#feature/mcp`
-
-On each launch, the hub checks `<project>/Packages/manifest.json` and enforces the package entry for the configured name+URL (adds or updates as needed).
-
-### Core endpoints
-
-- `GET /health`
-- `POST /projects`
-- `GET /projects`
-- `POST /projects/launch`
-- `POST /sessions/select`
-- `GET /sessions/{session_id}`
-- `POST /sessions/{session_id}/renew`
-- `POST /sessions/{session_id}/kill`
-- `POST /agents/register`
-- `POST /agents/heartbeat`
-- `POST /sessions/{session_id}/forward`
-
-Send `X-Hub-Token` header for all non-health endpoints.
+- Unity package repo: [UnityGPTActions](https://github.com/denchi/UnityGPTActions)
+- SSH clone URL: `git@github.com:denchi/UnityGPTActions.git`
+- Default package reference used by the hub:
+  - Package name: `com.deathbygravitystudio.gptactions`
+  - Git URL: `https://github.com/denchi/UnityGPTActions.git#feature/mcp`
 
 ## Requirements
 
 - macOS 13+
-- Swift 6 toolchain (Xcode 15+ or Swift CLI)
+- Xcode 15+ (or Swift 6 toolchain)
+- Python 3.10+ recommended
+- Unity installed locally
 
-## Run
+## Quick Start
 
-```bash
-cd /Users/denis/dev/unity-mcp-launcher
-swift run UnityMCPHubApp
-```
-
-On startup, the app now verifies Python dependencies and installs missing packages (`--user`) for:
-
-- `hub_service/requirements.txt`
-- `hub_mcp_gateway/requirements.txt`
-
-Notes:
-
-- Hub service dependencies are required for app-managed hub startup.
-- Hub MCP gateway dependencies are optional during app startup.
-- The app auto-discovers Python interpreters (e.g. `python3.10+` in Homebrew/system paths).
-- The `mcp` package requires Python `3.10+`, and the app will attempt to install it with a compatible interpreter when available.
-
-## Build
+1. Clone and build:
 
 ```bash
-cd /Users/denis/dev/unity-mcp-launcher
+git clone <this-repo-url>
+cd <repo-folder>
 swift build
 ```
 
-## Use
+2. Run the app:
 
-1. Launch the mac app.
-2. In the app's `Hub Connection` section set:
-   - `Hub URL` (default `http://127.0.0.1:8787`)
-   - `Hub Token` (default `dev-shared-secret`)
-   - `Client ID` (any stable ID, for example `denis-mac`)
-   - `Default Execute Method` (for ChatGptAssistant: `Mcp.HubBootstrap.Start`)
-   - Optional launch preflight:
-     - `UPM Package Name` (for example `com.example.unitymcp`)
-     - `UPM Git URL` (for example `https://github.com/org/repo.git?path=/Packages/com.example.unitymcp#v1.2.3`)
-3. Click `Start Hub` (or just `Test + Sync`, which also auto-starts it).
-4. Click `Add Project`.
-2. Set:
-   - `Name`
-   - `Project Path` (Unity project root)
-   - `Unity Binary` (e.g. `/Applications/Unity/Hub/Editor/<version>/Unity.app/Contents/MacOS/Unity`)
-   - Optional tags
-5. Select a project and click `Launch`.
-6. After session is active, use forward tests in the detail panel:
-   - `Forward Test (Health)` (agent `/mcp/health`)
-   - `Forward Test (List Tools)` (bridge `/tools`)
-   - `Forward Test (Call Tool)` (bridge `/tools/call`)
+```bash
+swift run UnityMCPHubApp
+```
 
-Projects are now persisted in the hub's SQLite database (not in local app JSON).
+The app can start the local hub service automatically when syncing or launching projects.
 
-## Unity Agent Bootstrap (starting -> ready)
+## How To Use
 
-This repo now includes Unity Editor scripts for hub registration and heartbeat:
+1. Open **Settings** and set:
+   - Hub URL (default: `http://127.0.0.1:8787`)
+   - Hub token (default: `dev-shared-secret`)
+   - Optional Unity package override (name + git URL)
+2. Add one or more Unity projects.
+3. Open **Unity Installations**:
+   - Browse/add local Unity installs
+   - Remove installs from the hub list
+4. In project details:
+   - `Unity Version` is read from `ProjectSettings/ProjectVersion.txt`
+   - Select which installed Unity version to launch with
+   - If the required version is not installed, a warning icon is shown
+5. Click **Launch Project**.
 
-- `/Users/denis/dev/unity-mcp-launcher/unity_agent/Editor/UnityMcpHubAgentRuntime.cs`
-- `/Users/denis/dev/unity-mcp-launcher/unity_agent/Editor/UnityMcpHubBootstrap.cs`
+## Unity Side Setup (required)
 
-Copy these files into each Unity project's `Assets/Editor` (or your editor package).
+Your Unity project must include the Unity package that talks to this hub workflow.
 
-How it works:
+Preferred UPM dependency entry in `Packages/manifest.json`:
 
-1. Hub launches Unity from `POST /sessions/select`.
-2. Hub injects env vars (`UNITY_MCP_SESSION_ID`, `UNITY_MCP_LAUNCH_TOKEN`, etc).
-3. `UnityMcpHubAgentRuntime` reads env vars, calls `POST /agents/register`, then sends `POST /agents/heartbeat`.
-4. Session status transitions from `starting` to `ready` automatically.
+```json
+{
+  "dependencies": {
+    "com.deathbygravitystudio.gptactions": "https://github.com/denchi/UnityGPTActions.git#feature/mcp"
+  }
+}
+```
 
-For ChatGptAssistant launch integration, set:
+The hub can patch `manifest.json` during launch using configured package name/Git URL.
 
-`HUB_DEFAULT_EXECUTE_METHOD=Mcp.HubBootstrap.Start`
+If you need the package source directly:
 
-Default agent endpoint used for forwarding is `http://127.0.0.1:7072` unless `UNITY_MCP_AGENT_ENDPOINT` is provided.
+```bash
+git clone git@github.com:denchi/UnityGPTActions.git
+```
 
-## Run Actions (Codex Run Button)
+## Run Backend Services Manually (optional)
 
-Use these from Codex app Run:
+Run hub service:
+
+```bash
+cd hub_service
+python3 -m pip install -r requirements.txt
+python3 run.py
+```
+
+Run MCP gateway:
+
+```bash
+cd hub_mcp_gateway
+python3 -m pip install -r requirements.txt
+python3 run.py
+```
+
+## Useful Commands
+
+From repo root:
 
 ```bash
 make run
-```
-
-Other useful actions:
-
-```bash
 make run-hub
 make run-hub-mcp
 make build
 make test-hub
 ```
 
-## Connect via MCP (Cursor / Codex / other MCP clients)
+## Notes
 
-This repo includes a unified MCP gateway at:
-
-`/Users/denis/dev/unity-mcp-launcher/hub_mcp_gateway`
-
-It exposes both:
-
-- Hub-level tools (`list_projects`, `select_project`, `list_sessions`, `kill_session`)
-- Unity tools routed to active session (`list_unity_tools`, `call_unity_tool`)
-
-### Install gateway deps
-
-```bash
-cd /Users/denis/dev/unity-mcp-launcher/hub_mcp_gateway
-python3 -m pip install -r requirements.txt
-```
-
-### MCP server config example
-
-```json
-{
-  "mcpServers": {
-    "unity-hub": {
-      "command": "python3",
-      "args": ["/Users/denis/dev/unity-mcp-launcher/hub_mcp_gateway/run.py"],
-      "env": {
-        "HUB_MCP_HUB_URL": "http://127.0.0.1:8787",
-        "HUB_MCP_HUB_TOKEN": "dev-shared-secret",
-        "HUB_MCP_CLIENT_ID": "denis-mac"
-      }
-    }
-  }
-}
-```
-
-### Typical tool sequence
-
-1. `list_projects`
-2. `select_project`
-3. `list_unity_tools`
-4. `call_unity_tool`
+- Project versions are read from project files, not from the database.
+- Session selection is idempotent for active sessions to avoid duplicate Unity launches.
+- Session kill supports a startup grace period unless force-killed.
