@@ -22,7 +22,7 @@ class Settings:
     ).strip()
     unity_agent_package_git_url: str = os.getenv(
         "HUB_UNITY_AGENT_PACKAGE_GIT_URL",
-        "https://github.com/denchi/UnityGPTActions.git#feature/mcp",
+        "https://github.com/denchi/UnityGPTActions.git",
     ).strip()
     unity_install_root: Path = Path(os.getenv("UNITY_INSTALL_ROOT", "/Applications/Unity/Hub/Editor"))
     unity_hub_cli_path: Path = Path(
