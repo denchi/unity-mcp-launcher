@@ -10,7 +10,16 @@ final class ProjectListViewModel: ObservableObject {
     }
 
     @Published private(set) var projects: [UnityProject] = []
-    @Published var selectedProjectID: UUID?
+    @Published var selectedProjectID: UUID? {
+        didSet {
+            if selectedProjectID != oldValue {
+                selectedUnityLaunchVersion = ""
+                Task {
+                    await refreshSelectedProjectUnityVersion()
+                }
+            }
+        }
+    }
     @Published var searchText = ""
     @Published var showingAddSheet = false
     @Published var editingProject: UnityProject?
@@ -26,6 +35,9 @@ final class ProjectListViewModel: ObservableObject {
     @Published var selectedToolName: String = ""
     @Published var toolArgumentsJSON: String = "{}"
     private var toolDefaultArgumentsByName: [String: String] = [:]
+    @Published var unityInstallations: [HubUnityInstallation] = []
+    @Published var selectedUnityLaunchVersion: String = ""
+    @Published var unityVersionInstallInput: String = ""
 
     @Published var hubBaseURL: String
     @Published var hubToken: String
@@ -141,8 +153,115 @@ final class ProjectListViewModel: ObservableObject {
             applyActiveSessions(sessions)
             lastSyncAt = Date()
             hubRuntimeStatus = "Connected"
+            await refreshUnityInstallations()
+            await refreshAllProjectUnityVersions()
+            updatePreferredUnityLaunchVersion(force: true)
         } catch {
             showError(title: "Sync Failed", error: error)
+        }
+    }
+
+    func refreshUnityInstallations() async {
+        do {
+            let installations = try await hubClient.listUnityInstallations(
+                baseURL: hubBaseURL,
+                token: hubToken
+            )
+            unityInstallations = installations
+            updatePreferredUnityLaunchVersion()
+        } catch {
+            showError(title: "Unity Installations Failed", error: error)
+        }
+    }
+
+    func installUnityVersion() {
+        let version = unityVersionInstallInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !version.isEmpty else {
+            return
+        }
+
+        Task {
+            setBusy(true)
+            defer { setBusy(false) }
+            do {
+                try await hubClient.installUnityVersion(
+                    baseURL: hubBaseURL,
+                    token: hubToken,
+                    version: version
+                )
+                unityVersionInstallInput = ""
+                await refreshUnityInstallations()
+            } catch {
+                showError(title: "Install Failed", error: error)
+            }
+        }
+    }
+
+    func uninstallUnityVersion(_ version: String, source: String? = nil) {
+        Task {
+            setBusy(true)
+            defer { setBusy(false) }
+            do {
+                try await hubClient.uninstallUnityVersion(
+                    baseURL: hubBaseURL,
+                    token: hubToken,
+                    version: version,
+                    source: source
+                )
+                await refreshUnityInstallations()
+            } catch {
+                showError(title: "Remove Installation Failed", error: error)
+            }
+        }
+    }
+
+    func removeUnityInstallation(_ installation: HubUnityInstallation) {
+        if installation.source == "custom" {
+            forgetLocalUnityInstallation(installation.installPath)
+            return
+        }
+        uninstallUnityVersion(installation.version, source: installation.source)
+    }
+
+    func registerLocalUnityInstallation(_ installPath: String) {
+        let normalizedPath = installPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedPath.isEmpty else {
+            return
+        }
+        Task {
+            setBusy(true)
+            defer { setBusy(false) }
+            do {
+                _ = try await hubClient.registerUnityInstallation(
+                    baseURL: hubBaseURL,
+                    token: hubToken,
+                    installPath: normalizedPath
+                )
+                await refreshUnityInstallations()
+            } catch {
+                showError(title: "Add Installation Failed", error: error)
+            }
+        }
+    }
+
+    func forgetLocalUnityInstallation(_ installPath: String) {
+        let normalizedPath = installPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedPath.isEmpty else {
+            return
+        }
+        Task {
+            setBusy(true)
+            defer { setBusy(false) }
+            do {
+                try await hubClient.forgetUnityInstallation(
+                    baseURL: hubBaseURL,
+                    token: hubToken,
+                    installPath: normalizedPath
+                )
+                await refreshUnityInstallations()
+            } catch {
+                showError(title: "Forget Installation Failed", error: error)
+            }
         }
     }
 
@@ -205,7 +324,8 @@ final class ProjectListViewModel: ObservableObject {
                         mostRecent: false,
                         autoLaunch: true,
                         launchHeadless: headless,
-                        executeMethod: executeMethod ?? normalizedDefaultExecuteMethod()
+                        executeMethod: executeMethod ?? normalizedDefaultExecuteMethod(),
+                        unityVersion: normalizedUnityVersion(selectedUnityLaunchVersion)
                     )
                 )
                 activeSessionsByProjectID[selected.hubProjectID] = response.session
@@ -239,7 +359,8 @@ final class ProjectListViewModel: ObservableObject {
                 let dead = try await hubClient.killSession(
                     baseURL: hubBaseURL,
                     token: hubToken,
-                    sessionID: session.sessionID
+                    sessionID: session.sessionID,
+                    force: true
                 )
                 activeSessionsByProjectID.removeValue(forKey: selected.hubProjectID)
                 stopPollingSession(sessionID: session.sessionID)
@@ -413,6 +534,103 @@ final class ProjectListViewModel: ObservableObject {
         )
     }
 
+    private func updatePreferredUnityLaunchVersion(force: Bool = false) {
+        guard let selected = selectedProject else {
+            selectedUnityLaunchVersion = ""
+            return
+        }
+
+        let projectVersion = selected.unityVersion?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedProjectVersion = canonicalUnityVersion(projectVersion)
+
+        if force {
+            selectedUnityLaunchVersion = projectVersion ?? ""
+            return
+        }
+
+        let normalizedSelected = canonicalUnityVersion(selectedUnityLaunchVersion)
+        if normalizedSelected == normalizedProjectVersion {
+            selectedUnityLaunchVersion = projectVersion ?? selectedUnityLaunchVersion
+            return
+        }
+
+        if selectedUnityLaunchVersion.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            selectedUnityLaunchVersion = projectVersion ?? ""
+        }
+    }
+
+    private func refreshAllProjectUnityVersions() async {
+        let projectIDs = projects.map(\.id)
+        for projectID in projectIDs {
+            await refreshProjectUnityVersion(projectID: projectID, reportFailure: false)
+        }
+    }
+
+    private func refreshSelectedProjectUnityVersion() async {
+        guard let projectID = selectedProjectID else {
+            return
+        }
+        await refreshProjectUnityVersion(projectID: projectID, reportFailure: true)
+    }
+
+    private func refreshProjectUnityVersion(projectID: UUID, reportFailure: Bool) async {
+        guard let project = projects.first(where: { $0.id == projectID }) else {
+            return
+        }
+
+        do {
+            let version = try await hubClient.detectProjectUnityVersion(
+                baseURL: hubBaseURL,
+                token: hubToken,
+                projectID: project.hubProjectID
+            )
+            if let index = projects.firstIndex(where: { $0.id == projectID }) {
+                projects[index].unityVersion = version
+            }
+            if selectedProjectID == projectID {
+                updatePreferredUnityLaunchVersion(force: true)
+            }
+        } catch {
+            if let index = projects.firstIndex(where: { $0.id == projectID }) {
+                projects[index].unityVersion = nil
+            }
+            if selectedProjectID == projectID {
+                updatePreferredUnityLaunchVersion(force: true)
+            }
+            if reportFailure {
+                showError(title: "Unity Version Detection Failed", error: error)
+            }
+        }
+    }
+
+    private func isUnityVersionInstalled(_ version: String) -> Bool {
+        guard let normalizedTarget = canonicalUnityVersion(version) else {
+            return false
+        }
+        return unityInstallations.contains {
+            guard let normalizedCandidate = canonicalUnityVersion($0.version) else {
+                return false
+            }
+            return normalizedTarget == normalizedCandidate
+        }
+    }
+
+    private func canonicalUnityVersion(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        let token = String(trimmed.split(whereSeparator: { $0.isWhitespace || $0 == "(" }).first ?? "")
+        let lowered = token.lowercased()
+        guard !lowered.isEmpty else { return nil }
+        if let range = lowered.range(
+            of: #"^\d+\.\d+\.\d+[abcfp]\d+"#,
+            options: .regularExpression
+        ) {
+            return String(lowered[range])
+        }
+        return lowered
+    }
+
     private func setBusy(_ value: Bool) {
         isBusy = value
     }
@@ -441,6 +659,11 @@ final class ProjectListViewModel: ObservableObject {
 
     private func normalizedUnityAgentPackageGitURL() -> String {
         unityAgentPackageGitURL.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func normalizedUnityVersion(_ value: String) -> String? {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 
     private func applyActiveSessions(_ sessions: [HubSessionRecord]) {

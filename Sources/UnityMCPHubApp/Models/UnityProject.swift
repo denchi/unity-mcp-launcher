@@ -17,6 +17,7 @@ struct UnityProject: Identifiable, Codable, Hashable {
     var lastSeenAt: Date?
     var createdAt: Date
     var lastOpenedAt: Date?
+    var unityVersion: String?
 
     init(
         id: UUID = UUID(),
@@ -27,8 +28,10 @@ struct UnityProject: Identifiable, Codable, Hashable {
         hubStatus: String? = nil,
         lastSeenAt: Date? = nil,
         createdAt: Date = Date(),
-        lastOpenedAt: Date? = nil
+        lastOpenedAt: Date? = nil,
+        unityVersion: String? = nil
     ) {
+        self.unityVersion = unityVersion
         self.id = id
         self.name = name
         self.projectPath = projectPath

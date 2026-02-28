@@ -35,6 +35,12 @@ struct ProjectRowView: View {
                     .font(.subheadline)
                     .foregroundStyle(isSelected ? .white.opacity(0.95) : .secondary)
                     .lineLimit(1)
+                if let version = project.unityVersion, !version.isEmpty {
+                    Text("Unity \(version)")
+                        .font(.caption)
+                        .foregroundStyle(isSelected ? .white.opacity(0.75) : .secondary)
+                        .lineLimit(1)
+                }
                 if !project.tags.isEmpty {
                     if isSelected {
                         Text(project.tags.joined(separator: " • "))

@@ -20,6 +20,28 @@ struct HubProjectRecord: Codable {
     }
 }
 
+struct HubUnityInstallation: Codable, Hashable {
+    let version: String
+    let installPath: String
+    let unityExecutable: String
+    let source: String
+
+    enum CodingKeys: String, CodingKey {
+        case version
+        case installPath = "install_path"
+        case unityExecutable = "unity_executable"
+        case source
+    }
+}
+
+struct HubUnityVersionResponse: Codable {
+    let unityVersion: String?
+
+    enum CodingKeys: String, CodingKey {
+        case unityVersion = "unity_version"
+    }
+}
+
 struct HubSessionRecord: Codable {
     let sessionID: String
     let clientID: String
@@ -78,6 +100,7 @@ struct HubSelectProjectRequest: Codable {
     let autoLaunch: Bool
     let launchHeadless: Bool
     let executeMethod: String?
+    let unityVersion: String?
 
     enum CodingKeys: String, CodingKey {
         case clientID = "client_id"
@@ -88,6 +111,7 @@ struct HubSelectProjectRequest: Codable {
         case autoLaunch = "auto_launch"
         case launchHeadless = "launch_headless"
         case executeMethod = "execute_method"
+        case unityVersion = "unity_version"
     }
 }
 
@@ -284,11 +308,12 @@ final class HubClient {
         )
     }
 
-    func killSession(baseURL: String, token: String, sessionID: String) async throws -> HubSessionRecord {
-        try await request(
+    func killSession(baseURL: String, token: String, sessionID: String, force: Bool = false) async throws -> HubSessionRecord {
+        let path = "/sessions/\(sessionID)/kill?force=\(force ? "true" : "false")"
+        return try await request(
             method: "POST",
             baseURL: baseURL,
-            path: "/sessions/\(sessionID)/kill",
+            path: path,
             token: token,
             body: Optional<Int>.none,
             responseType: HubSessionRecord.self
@@ -354,6 +379,86 @@ final class HubClient {
                 "arguments": arguments
             ]
         )
+    }
+
+    func listUnityInstallations(baseURL: String, token: String) async throws -> [HubUnityInstallation] {
+        try await request(
+            method: "GET",
+            baseURL: baseURL,
+            path: "/unity/installations",
+            token: token,
+            body: Optional<Int>.none,
+            responseType: [HubUnityInstallation].self
+        )
+    }
+
+    func installUnityVersion(baseURL: String, token: String, version: String) async throws {
+        let payload = UnityInstallPayload(version: version)
+        _ = try await request(
+            method: "POST",
+            baseURL: baseURL,
+            path: "/unity/installations",
+            token: token,
+            body: payload,
+            responseType: EmptyObject.self
+        )
+    }
+
+    func uninstallUnityVersion(baseURL: String, token: String, version: String, source: String? = nil) async throws {
+        let encodedVersion = try percentEncodedPathComponent(version)
+        var path = "/unity/installations/\(encodedVersion)"
+        let normalizedSource = source?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !normalizedSource.isEmpty {
+            guard let encodedSource = normalizedSource.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) else {
+                throw HubClientError.requestFailed("Source cannot be encoded for use in a URL query.")
+            }
+            path += "?source=\(encodedSource)"
+        }
+        _ = try await request(
+            method: "DELETE",
+            baseURL: baseURL,
+            path: path,
+            token: token,
+            body: Optional<Int>.none,
+            responseType: EmptyObject.self
+        )
+    }
+
+    func registerUnityInstallation(baseURL: String, token: String, installPath: String) async throws -> HubUnityInstallation {
+        let payload = UnityLocalInstallPayload(installPath: installPath)
+        return try await request(
+            method: "POST",
+            baseURL: baseURL,
+            path: "/unity/installations/local",
+            token: token,
+            body: payload,
+            responseType: HubUnityInstallation.self
+        )
+    }
+
+    func forgetUnityInstallation(baseURL: String, token: String, installPath: String) async throws {
+        let payload = UnityLocalInstallPayload(installPath: installPath)
+        _ = try await request(
+            method: "DELETE",
+            baseURL: baseURL,
+            path: "/unity/installations/local",
+            token: token,
+            body: payload,
+            responseType: EmptyObject.self
+        )
+    }
+
+    func detectProjectUnityVersion(baseURL: String, token: String, projectID: String) async throws -> String? {
+        let encodedProjectID = try percentEncodedPathComponent(projectID)
+        let response = try await request(
+            method: "GET",
+            baseURL: baseURL,
+            path: "/projects/\(encodedProjectID)/unity-version",
+            token: token,
+            body: Optional<Int>.none,
+            responseType: HubUnityVersionResponse.self
+        )
+        return response.unityVersion
     }
 
     private func forwardRequest(
@@ -496,6 +601,28 @@ final class HubClient {
             return String(rendered.prefix(maxLength)) + "...(truncated)"
         }
         return rendered
+    }
+
+    private struct UnityInstallPayload: Encodable {
+        let version: String
+    }
+
+    private struct UnityLocalInstallPayload: Encodable {
+        let installPath: String
+
+        enum CodingKeys: String, CodingKey {
+            case installPath = "install_path"
+        }
+    }
+
+    private func percentEncodedPathComponent(_ value: String) throws -> String {
+        guard
+            let encoded = value.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed),
+            !encoded.isEmpty
+        else {
+            throw HubClientError.requestFailed("Value cannot be encoded for use in a URL path.")
+        }
+        return encoded
     }
 
     private func request<RequestBody: Encodable, ResponseBody: Decodable>(

@@ -198,11 +198,13 @@ def clear_session() -> dict[str, Any]:
 
 
 @mcp.tool()
-def kill_session(session_id: str = "") -> dict[str, Any]:
+def kill_session(session_id: str = "", force: bool = False) -> dict[str, Any]:
     """Kill a Hub session and clear local active context if it matches."""
     sid = _resolve_session_id(session_id.strip() or None)
-    session = _hub_request("POST", f"/sessions/{sid}/kill")
-    if sid == state.active_session_id:
+    force_flag = "true" if force else "false"
+    session = _hub_request("POST", f"/sessions/{sid}/kill?force={force_flag}")
+    session_status = str(session.get("status", "")).strip().lower()
+    if sid == state.active_session_id and session_status == "dead":
         state.active_session_id = None
         state.active_project_id = None
     return {"killed_session": session, "active_session_id": state.active_session_id}

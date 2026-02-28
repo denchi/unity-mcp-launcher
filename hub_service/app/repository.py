@@ -324,6 +324,27 @@ class HubRepository:
             )
         return self.get_session(session_id)
 
+    def get_active_session_for_project(self, project_id: str) -> Optional[SessionRecord]:
+        with self.db.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT *
+                FROM sessions
+                WHERE project_id = ?
+                  AND status != 'dead'
+                ORDER BY
+                    CASE status
+                        WHEN 'ready' THEN 0
+                        WHEN 'starting' THEN 1
+                        ELSE 2
+                    END ASC,
+                    updated_at DESC
+                LIMIT 1
+                """,
+                (project_id,),
+            ).fetchone()
+        return self._session_from_row(row) if row else None
+
     def has_non_dead_session_for_project(self, project_id: str, exclude_session_id: Optional[str] = None) -> bool:
         query = "SELECT 1 FROM sessions WHERE project_id = ? AND status != 'dead'"
         params: list[str] = [project_id]

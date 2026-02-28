@@ -291,6 +291,38 @@ class HubRepositoryTests(unittest.TestCase):
             self.repo.has_non_dead_session_for_project("p11", exclude_session_id=session.session_id)
         )
 
+    def test_get_active_session_for_project_prefers_ready(self) -> None:
+        self.repo.upsert_project(
+            ProjectCreateRequest(
+                project_id="p12",
+                name="ActiveSessionProject",
+                project_path="/tmp/p12",
+                unity_path="/Applications/Unity",
+                tags=[],
+            )
+        )
+        starting = self.repo.create_session(
+            client_id="client-active",
+            project_id="p12",
+            status="starting",
+            lease_expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+        )
+        ready = self.repo.create_session(
+            client_id="client-active",
+            project_id="p12",
+            status="ready",
+            lease_expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+        )
+
+        active = self.repo.get_active_session_for_project("p12")
+        self.assertIsNotNone(active)
+        self.assertEqual(active.session_id, ready.session_id)
+
+        self.repo.kill_session(ready.session_id)
+        fallback = self.repo.get_active_session_for_project("p12")
+        self.assertIsNotNone(fallback)
+        self.assertEqual(fallback.session_id, starting.session_id)
+
 
 if __name__ == "__main__":
     unittest.main()

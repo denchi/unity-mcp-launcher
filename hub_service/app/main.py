@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Optional
 
 import httpx
@@ -23,8 +24,23 @@ from .models import (
     SelectProjectRequest,
     SelectProjectResponse,
     SessionRecord,
+    UnityInstallationRecord,
+    UnityInstallRequest,
+    UnityLocalInstallRequest,
+    UnityUninstallRequest,
+    UnityVersionResponse,
 )
+from .project_version import detect_project_unity_version
 from .repository import HubRepository
+from .unity_registry import (
+    UnityRegistryError,
+    find_unity_installation_by_version,
+    list_unity_installations,
+    register_custom_unity_installation,
+    install_unity_version,
+    remove_unity_installation,
+    remove_custom_installation_by_path,
+)
 
 app = FastAPI(title="Unity MCP Hub", version="0.1.0")
 db = Database(settings.database_path)
@@ -139,6 +155,60 @@ def resolve_forward_base(session: SessionRecord, payload: ForwardCallRequest) ->
     return session.agent_endpoint, "agent"
 
 
+def list_unity_installation_records() -> list[UnityInstallationRecord]:
+    installations = list_unity_installations(
+        settings.unity_install_root,
+        settings.unity_custom_installations_path,
+        settings.unity_hidden_installations_path,
+    )
+    return [installation_to_record(entry) for entry in installations]
+
+
+def installation_display_path(install_path: Path) -> Path:
+    unity_app = install_path / "Unity.app"
+    if unity_app.exists() and unity_app.is_dir():
+        return unity_app
+    return install_path
+
+
+def installation_to_record(installation) -> UnityInstallationRecord:
+    return UnityInstallationRecord(
+        version=installation.version,
+        install_path=str(installation_display_path(installation.install_path)),
+        unity_executable=str(installation.unity_executable),
+        source=installation.source,
+    )
+
+
+def resolve_project_for_launch(project: ProjectRecord, unity_version: Optional[str]) -> ProjectRecord:
+    if not unity_version:
+        return project
+
+    installation = find_unity_installation_by_version(
+        unity_version,
+        settings.unity_install_root,
+        settings.unity_custom_installations_path,
+        settings.unity_hidden_installations_path,
+    )
+    if not installation:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Unity version {unity_version} is not installed.",
+        )
+
+    return project.copy(update={"unity_path": str(installation.unity_executable)})
+
+
+def is_within_starting_grace(session: SessionRecord, now: Optional[datetime] = None) -> bool:
+    if session.status != "starting":
+        return False
+    if settings.starting_session_grace_seconds <= 0:
+        return False
+    reference = now or datetime.now(timezone.utc)
+    age_seconds = (reference - session.created_at).total_seconds()
+    return age_seconds < settings.starting_session_grace_seconds
+
+
 @app.get("/health", response_model=HealthResponse)
 def health() -> HealthResponse:
     return HealthResponse(status="ok", now=datetime.now(timezone.utc))
@@ -163,14 +233,81 @@ def delete_project(project_id: str) -> dict:
     return {"ok": True}
 
 
+@app.get("/projects/{project_id}/unity-version", response_model=UnityVersionResponse, dependencies=[Depends(require_auth)])
+def project_unity_version(project_id: str) -> UnityVersionResponse:
+    project = repo.get_project(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="project not found")
+
+    detected = detect_project_unity_version(project.project_path)
+    return UnityVersionResponse(unity_version=detected)
+
+
+@app.get("/unity/installations", response_model=list[UnityInstallationRecord], dependencies=[Depends(require_auth)])
+def unity_installations() -> list[UnityInstallationRecord]:
+    return list_unity_installation_records()
+
+
+@app.post("/unity/installations", dependencies=[Depends(require_auth)])
+def install_unity(payload: UnityInstallRequest) -> dict:
+    try:
+        install_unity_version(payload.version, settings.unity_hub_cli_path)
+    except UnityRegistryError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return {"ok": True}
+
+
+@app.post("/unity/installations/local", response_model=UnityInstallationRecord, dependencies=[Depends(require_auth)])
+def register_local_installation(payload: UnityLocalInstallRequest) -> UnityInstallationRecord:
+    try:
+        installation = register_custom_unity_installation(
+            Path(payload.install_path),
+            settings.unity_install_root,
+            settings.unity_custom_installations_path,
+            settings.unity_hidden_installations_path,
+        )
+    except UnityRegistryError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    return installation_to_record(installation)
+
+
+@app.delete("/unity/installations/{version}", dependencies=[Depends(require_auth)])
+def uninstall_unity(version: str, source: Optional[str] = None) -> dict:
+    try:
+        remove_unity_installation(
+            version,
+            settings.unity_install_root,
+            settings.unity_custom_installations_path,
+            settings.unity_hidden_installations_path,
+            preferred_source=source,
+        )
+    except UnityRegistryError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return {"ok": True}
+
+
+@app.delete("/unity/installations/local", dependencies=[Depends(require_auth)])
+def forget_local_installation(payload: UnityLocalInstallRequest) -> dict:
+    try:
+        remove_custom_installation_by_path(
+            Path(payload.install_path),
+            settings.unity_custom_installations_path,
+        )
+    except UnityRegistryError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return {"ok": True}
+
+
 @app.post("/projects/launch", dependencies=[Depends(require_auth)])
 def launch_project(payload: LaunchProjectRequest) -> dict:
     project = repo.get_project(payload.project_id)
     if not project:
         raise HTTPException(status_code=404, detail="project not found")
     try:
+        prepared = resolve_project_for_launch(project, payload.unity_version)
         pid = launch_unity(
-            project,
+            prepared,
             payload.headless,
             resolve_execute_method(payload.execute_method),
             package_name=settings.unity_agent_package_name,
@@ -188,6 +325,11 @@ def select_project(payload: SelectProjectRequest) -> SelectProjectResponse:
     project = repo.find_project(payload.project_id, payload.name, payload.tags, payload.most_recent)
     if not project:
         raise HTTPException(status_code=404, detail="no project matches selection")
+
+    active = repo.get_active_session_for_project(project.project_id)
+    if active:
+        reused = repo.extend_lease(active.session_id, session_lease_expiry()) or active
+        return SelectProjectResponse(session=reused, launched=False)
 
     # Launch requests from the app should start Unity explicitly; persisted project status
     # can be stale after crashes/restarts, so do not gate launch on "ready".
@@ -209,7 +351,7 @@ def select_project(payload: SelectProjectRequest) -> SelectProjectResponse:
                 runtime_server_url,
             )
             launch_unity(
-                project,
+                resolve_project_for_launch(project, payload.unity_version),
                 payload.launch_headless,
                 resolve_execute_method(payload.execute_method),
                 env_overrides=launch_env_for_session(session, runtime_server_url),
@@ -248,7 +390,13 @@ def renew_session(session_id: str) -> SessionRecord:
 
 
 @app.post("/sessions/{session_id}/kill", response_model=SessionRecord, dependencies=[Depends(require_auth)])
-def kill_session(session_id: str) -> SessionRecord:
+def kill_session(session_id: str, force: bool = False) -> SessionRecord:
+    current = repo.get_session(session_id)
+    if not current:
+        raise HTTPException(status_code=404, detail="session not found")
+    if not force and is_within_starting_grace(current):
+        return current
+
     session = repo.kill_session(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="session not found")

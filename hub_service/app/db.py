@@ -33,6 +33,7 @@ class Database:
                     name TEXT NOT NULL,
                     project_path TEXT NOT NULL,
                     unity_path TEXT NOT NULL,
+                    unity_version TEXT,
                     tags_json TEXT NOT NULL,
                     status TEXT NOT NULL,
                     last_seen_at TEXT,
@@ -60,6 +61,12 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_sessions_project_id ON sessions(project_id);
                 """
             )
+            project_columns = [
+                row["name"]
+                for row in conn.execute("PRAGMA table_info(projects)").fetchall()
+            ]
+            if "unity_version" not in project_columns:
+                conn.execute("ALTER TABLE projects ADD COLUMN unity_version TEXT")
 
 
 def encode_json(value: object) -> str:

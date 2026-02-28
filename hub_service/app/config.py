@@ -24,6 +24,17 @@ class Settings:
         "HUB_UNITY_AGENT_PACKAGE_GIT_URL",
         "https://github.com/denchi/UnityGPTActions.git#feature/mcp",
     ).strip()
+    unity_install_root: Path = Path(os.getenv("UNITY_INSTALL_ROOT", "/Applications/Unity/Hub/Editor"))
+    unity_hub_cli_path: Path = Path(
+        os.getenv("UNITY_HUB_CLI_PATH", "/Applications/Unity Hub/Unity Hub.app/Contents/MacOS/Unity Hub")
+    )
+    unity_custom_installations_path: Path = Path(
+        os.getenv("UNITY_CUSTOM_INSTALLATIONS_PATH", "./hub_service/unity_installations.json")
+    )
+    unity_hidden_installations_path: Path = Path(
+        os.getenv("UNITY_HIDDEN_INSTALLATIONS_PATH", "./hub_service/unity_hidden_installations.json")
+    )
+    starting_session_grace_seconds: int = int(os.getenv("HUB_STARTING_SESSION_GRACE_SECONDS", "120"))
 
 
 settings = Settings()

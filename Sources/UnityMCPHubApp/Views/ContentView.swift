@@ -5,6 +5,7 @@ struct ContentView: View {
     @State private var showingSettings = false
     @State private var showingDebugTools = false
     @State private var showingToolResponse = false
+    @State private var showingUnityInstallationsSheet = false
     @State private var toolResponseText = ""
 
     var body: some View {
@@ -71,6 +72,14 @@ struct ContentView: View {
                 .disabled(viewModel.isBusy)
 
                 Button {
+                    showingUnityInstallationsSheet = true
+                } label: {
+                    Image(systemName: "square.stack.3d.up")
+                }
+                .help("Manage installed Unity versions")
+                .disabled(viewModel.isBusy)
+
+                Button {
                     showingSettings = true
                 } label: {
                     Image(systemName: "gearshape")
@@ -90,6 +99,9 @@ struct ContentView: View {
         }
         .sheet(isPresented: $showingSettings) {
             settingsSheet
+        }
+        .sheet(isPresented: $showingUnityInstallationsSheet) {
+            UnityInstallationsSheet(viewModel: viewModel)
         }
         .sheet(isPresented: $showingToolResponse) {
             toolResponseSheet
@@ -120,9 +132,48 @@ struct ContentView: View {
                         Text(project.projectPath)
                             .textSelection(.enabled)
                     }
-                    LabeledContent("Unity Path") {
-                        Text(project.unityPath)
-                            .textSelection(.enabled)
+                    LabeledContent("Unity Version") {
+                        let selectedVersionLabel = launchVersionSelectionLabel(project)
+                        let selectedWarning = unityVersionWarningMessage(for: selectedVersionLabel)
+                        Menu {
+                            if let projectVersion = normalizedProjectVersion(project.unityVersion) {
+                                Button {
+                                    viewModel.selectedUnityLaunchVersion = projectVersion
+                                } label: {
+                                    HStack {
+                                        Text(projectVersionRowTitle(projectVersion))
+                                        if isSelectedLaunchVersion(projectVersion) {
+                                            Spacer()
+                                            Image(systemName: "checkmark")
+                                        }
+                                    }
+                                }
+                                Divider()
+                            }
+                            ForEach(viewModel.unityInstallations, id: \.version) { installation in
+                                Button {
+                                    viewModel.selectedUnityLaunchVersion = installation.version
+                                } label: {
+                                    HStack {
+                                        Text(installation.version)
+                                        if isSelectedLaunchVersion(installation.version) {
+                                            Spacer()
+                                            Image(systemName: "checkmark")
+                                        }
+                                    }
+                                }
+                            }
+                        } label: {
+                            HStack(spacing: 6) {
+                                Text(selectedVersionLabel)
+                                if let selectedWarning {
+                                    Image(systemName: "exclamationmark.triangle.fill")
+                                        .foregroundStyle(.orange)
+                                        .help(selectedWarning)
+                                }
+                            }
+                        }
+                        .disabled(viewModel.isBusy)
                     }
                     LabeledContent("Status") {
                         Text(project.hubStatus?.capitalized ?? "Unknown")
@@ -326,5 +377,78 @@ struct ContentView: View {
         }
         .padding(16)
         .frame(minWidth: 760, minHeight: 420)
+    }
+
+    private func unityVersionWarningMessage(for version: String?) -> String? {
+        guard let version else { return nil }
+        let trimmed = version.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        guard let required = canonicalUnityVersion(trimmed) else {
+            return "Could not parse project Unity version: \(trimmed)"
+        }
+
+        let installedNormalized = viewModel.unityInstallations.compactMap {
+            canonicalUnityVersion($0.version)
+        }
+        if installedNormalized.contains(required) {
+            return nil
+        }
+
+        if installedNormalized.isEmpty {
+            return "Project requires \(trimmed) (normalized: \(required)), but no installed Unity versions are currently listed."
+        }
+
+        let uniqueInstalled = Array(Set(installedNormalized)).sorted()
+        return "Project requires \(trimmed) (normalized: \(required)); installed normalized versions: \(uniqueInstalled.joined(separator: ", "))"
+    }
+
+    private func launchVersionSelectionLabel(_ project: UnityProject) -> String {
+        let selected = viewModel.selectedUnityLaunchVersion.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !selected.isEmpty {
+            return selected
+        }
+        return project.unityVersion ?? "Unknown"
+    }
+
+    private func normalizedProjectVersion(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        return trimmed
+    }
+
+    private func projectVersionRowTitle(_ version: String) -> String {
+        if unityVersionWarningMessage(for: version) == nil {
+            return "Project version: \(version)"
+        }
+        return "Project version: \(version) (Not installed)"
+    }
+
+    private func isSelectedLaunchVersion(_ version: String) -> Bool {
+        let selected = viewModel.selectedUnityLaunchVersion.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !selected.isEmpty else { return false }
+        guard let normalizedSelected = canonicalUnityVersion(selected),
+              let normalizedVersion = canonicalUnityVersion(version)
+        else {
+            return selected.caseInsensitiveCompare(version) == .orderedSame
+        }
+        return normalizedSelected == normalizedVersion
+    }
+
+    private func canonicalUnityVersion(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        let token = String(trimmed.split(whereSeparator: { $0.isWhitespace || $0 == "(" }).first ?? "")
+        let lowered = token.lowercased()
+        guard !lowered.isEmpty else { return nil }
+        if let range = lowered.range(
+            of: #"^\d+\.\d+\.\d+[abcfp]\d+"#,
+            options: .regularExpression
+        ) {
+            return String(lowered[range])
+        }
+        return lowered
     }
 }

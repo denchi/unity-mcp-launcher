@@ -35,6 +35,7 @@ class SelectProjectRequest(BaseModel):
     auto_launch: bool = True
     launch_headless: bool = False
     execute_method: Optional[str] = None
+    unity_version: Optional[str] = None
 
 
 class SessionRecord(BaseModel):
@@ -78,6 +79,7 @@ class LaunchProjectRequest(BaseModel):
     project_id: str = Field(min_length=1)
     headless: bool = False
     execute_method: Optional[str] = None
+    unity_version: Optional[str] = None
 
 
 class ForwardCallRequest(BaseModel):
@@ -96,3 +98,26 @@ class ForwardCallResponse(BaseModel):
 class HealthResponse(BaseModel):
     status: Literal["ok"]
     now: datetime
+
+
+class UnityInstallationRecord(BaseModel):
+    version: str
+    install_path: str
+    unity_executable: str
+    source: str
+
+
+class UnityInstallRequest(BaseModel):
+    version: str = Field(min_length=1)
+
+
+class UnityUninstallRequest(BaseModel):
+    version: str = Field(min_length=1)
+
+
+class UnityLocalInstallRequest(BaseModel):
+    install_path: str = Field(min_length=1)
+
+
+class UnityVersionResponse(BaseModel):
+    unity_version: Optional[str] = None
