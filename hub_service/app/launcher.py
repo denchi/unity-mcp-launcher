@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import socket
 import subprocess
 from pathlib import Path
@@ -13,6 +14,55 @@ from .models import ProjectRecord
 
 class UnityLaunchError(Exception):
     pass
+
+
+def normalize_project_path(project_path: str) -> str:
+    return os.path.normpath(str(Path(project_path).expanduser().resolve(strict=False)))
+
+
+def find_running_unity_project_pid(project_path: str) -> Optional[int]:
+    target_path = normalize_project_path(project_path)
+    try:
+        result = subprocess.run(
+            ["ps", "-axo", "pid=,command="],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+    if result.returncode != 0:
+        return None
+
+    for raw_line in result.stdout.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        parts = line.split(maxsplit=1)
+        if len(parts) != 2:
+            continue
+
+        pid_raw, command = parts
+        try:
+            pid = int(pid_raw)
+        except ValueError:
+            continue
+
+        try:
+            args = shlex.split(command)
+        except ValueError:
+            continue
+
+        for index, arg in enumerate(args):
+            if arg != "-projectPath" or index + 1 >= len(args):
+                continue
+            candidate_path = normalize_project_path(args[index + 1])
+            if candidate_path == target_path:
+                return pid
+
+    return None
 
 
 def warmup_unity_execute_method(executable: str, project_path: str, execute_method: str) -> None:

@@ -215,10 +215,40 @@ actor HubProcessManager {
     }
 
     private func defaultRunScriptPath() -> URL {
-        repoRootURL().appendingPathComponent("hub_service/run.py")
+        runtimeRootURL().appendingPathComponent("hub_service/run.py")
     }
 
-    private func repoRootURL() -> URL {
+    private func runtimeRootURL() -> URL {
+        let fileManager = FileManager.default
+        let fallback = sourceRepoRootURL()
+        var candidates: [URL] = []
+
+        if let resourceURL = Bundle.main.resourceURL {
+            candidates.append(resourceURL)
+        }
+
+        if let executableURL = Bundle.main.executableURL {
+            var current = executableURL.deletingLastPathComponent()
+            candidates.append(current)
+            for _ in 0..<6 {
+                current = current.deletingLastPathComponent()
+                candidates.append(current)
+            }
+        }
+
+        candidates.append(fallback)
+
+        for candidate in deduplicatedURLs(candidates) {
+            let runScript = candidate.appendingPathComponent("hub_service/run.py")
+            if fileManager.fileExists(atPath: runScript.path) {
+                return candidate
+            }
+        }
+
+        return fallback
+    }
+
+    private func sourceRepoRootURL() -> URL {
         let serviceFile = URL(fileURLWithPath: #filePath)
         return serviceFile
             .deletingLastPathComponent()
@@ -227,8 +257,22 @@ actor HubProcessManager {
             .deletingLastPathComponent()
     }
 
+    private func deduplicatedURLs(_ urls: [URL]) -> [URL] {
+        var seen: Set<String> = []
+        var unique: [URL] = []
+        for url in urls {
+            let key = url.standardizedFileURL.path
+            if seen.contains(key) {
+                continue
+            }
+            seen.insert(key)
+            unique.append(url)
+        }
+        return unique
+    }
+
     private func ensurePythonRequirements() throws {
-        let root = repoRootURL()
+        let root = runtimeRootURL()
         let interpreters = try discoverPythonInterpreters()
         if interpreters.isEmpty {
             throw HubProcessError.noCompatiblePythonInterpreter("No usable python interpreter was discovered on PATH.")

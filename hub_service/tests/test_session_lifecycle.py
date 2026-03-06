@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+import signal
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
 import app.main as hub_main
+from fastapi import HTTPException
 from app.db import Database
 from app.models import ProjectCreateRequest, SelectProjectRequest
 from app.repository import HubRepository
@@ -57,6 +59,22 @@ class SessionLifecycleTests(unittest.TestCase):
         self.assertEqual(response.session.session_id, existing.session_id)
         launch_mock.assert_not_called()
 
+    def test_select_project_blocks_duplicate_running_unity_instance(self) -> None:
+        payload = SelectProjectRequest(
+            client_id="client-dup",
+            project_id="p-session",
+            auto_launch=True,
+        )
+
+        with patch("app.main.find_running_unity_project_pid", return_value=7777), patch("app.main.launch_unity") as launch_mock:
+            with self.assertRaises(HTTPException) as raised:
+                hub_main.select_project(payload)
+
+        self.assertEqual(raised.exception.status_code, 409)
+        self.assertIn("already running", str(raised.exception.detail))
+        launch_mock.assert_not_called()
+        self.assertIsNone(self.repo.get_active_session_for_project("p-session"))
+
     def test_kill_session_skips_recent_starting_session_without_force(self) -> None:
         session = self.repo.create_session(
             client_id="client-b",
@@ -96,6 +114,21 @@ class SessionLifecycleTests(unittest.TestCase):
             killed = hub_main.kill_session(session.session_id)
 
         self.assertEqual(killed.status, "dead")
+
+    def test_kill_session_force_quit_terminates_unity_process(self) -> None:
+        session = self.repo.create_session(
+            client_id="client-force-quit",
+            project_id="p-session",
+            status="ready",
+            lease_expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+        )
+        self.repo.set_session_unity_pid(session.session_id, 8080)
+
+        with patch("app.main.os.kill") as kill_mock:
+            killed = hub_main.kill_session(session.session_id, force=True, terminate_process=True)
+
+        self.assertEqual(killed.status, "dead")
+        kill_mock.assert_called_once_with(8080, signal.SIGKILL)
 
 
 if __name__ == "__main__":

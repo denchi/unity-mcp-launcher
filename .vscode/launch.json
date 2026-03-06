@@ -1,0 +1,24 @@
+{
+    "configurations": [
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:unity-mcp-launcher}",
+            "name": "Debug UnityMCPHubApp",
+            "target": "UnityMCPHubApp",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug UnityMCPHubApp"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:unity-mcp-launcher}",
+            "name": "Release UnityMCPHubApp",
+            "target": "UnityMCPHubApp",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release UnityMCPHubApp"
+        }
+    ]
+}

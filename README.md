@@ -9,6 +9,7 @@ It provides:
 - Local Unity installation management (detect, add, remove from hub list)
 - Session-based launch and lifecycle control through a local hub service
 - Optional MCP gateway to expose tools to Codex/Cursor/other MCP clients
+- Menu bar operation (background app with status bar icon)
 
 ## Components
 
@@ -50,6 +51,7 @@ swift run UnityMCPHubApp
 ```
 
 The app can start the local hub service automatically when syncing or launching projects.
+In development mode (`swift run`) a terminal session is expected.
 
 ## How To Use
 
@@ -66,6 +68,7 @@ The app can start the local hub service automatically when syncing or launching 
    - Select which installed Unity version to launch with
    - If the required version is not installed, a warning icon is shown
 5. Click **Launch Project**.
+6. The app lives in the macOS status bar. Click the status icon to show/hide the main UI.
 
 ## Unity Side Setup (required)
 
@@ -117,7 +120,25 @@ make run-hub
 make run-hub-mcp
 make build
 make test-hub
+make package-macos VERSION=v0.1.4
 ```
+
+## Shipping / Installation (best practice)
+
+For end users, distribute a signed/notarized `.dmg` containing the `.app` bundle.
+
+Build local `.app` + `.dmg`:
+
+```bash
+./package_macos_app.sh v0.1.4
+```
+
+Output:
+
+- `dist/Unity MCP Launcher.app`
+- `dist/UnityMCPLauncher-v0.1.4.dmg`
+
+Install flow: user opens the DMG and drags **Unity MCP Launcher.app** to **Applications**.
 
 ## Notes
 

@@ -21,6 +21,14 @@ struct ContentView: View {
                     )
                         .tag(project.id)
                         .contextMenu {
+                            if projectSession != nil {
+                                Button("Kill Project", role: .destructive) {
+                                    if viewModel.selectedProjectID != project.id {
+                                        viewModel.selectedProjectID = project.id
+                                    }
+                                    viewModel.killSelectedProjectSession()
+                                }
+                            }
                             Button("Edit") { viewModel.editingProject = project }
                             Button("Remove", role: .destructive) {
                                 if viewModel.selectedProjectID != project.id {
@@ -33,6 +41,7 @@ struct ContentView: View {
                 .searchable(text: $viewModel.searchText, placement: .sidebar)
             }
             .navigationTitle("Unity MCP Hub")
+            .navigationSplitViewColumnWidth(min: 400, ideal: 480, max: 720)
         } detail: {
             detailPanel
         }
@@ -186,11 +195,6 @@ struct ContentView: View {
                                 .textSelection(.enabled)
                         }
 
-                        Button("Kill Session", role: .destructive) {
-                            viewModel.killSelectedProjectSession()
-                        }
-                        .disabled(viewModel.isBusy)
-
                         if session.status.lowercased() == "ready" {
                             DisclosureGroup("Debug Tools", isExpanded: $showingDebugTools) {
                                 VStack(alignment: .leading, spacing: 10) {
@@ -257,11 +261,21 @@ struct ContentView: View {
                         }
                     }
 
-                    Button(viewModel.canLaunchSelectedProject ? "Launch Project" : "Project Running") {
-                        viewModel.launchSelectedProject()
+                    if viewModel.canLaunchSelectedProject {
+                        Button("Launch Project") {
+                            viewModel.launchSelectedProject()
+                        }
+                        .keyboardShortcut(.defaultAction)
+                        .disabled(viewModel.isBusy)
+                    } else if viewModel.selectedProjectSession != nil {
+                        Button("Kill Project", role: .destructive) {
+                            viewModel.killSelectedProjectSession()
+                        }
+                        .disabled(viewModel.isBusy)
+                    } else {
+                        Button("Project Running") {}
+                            .disabled(true)
                     }
-                    .keyboardShortcut(.defaultAction)
-                    .disabled(!viewModel.canLaunchSelectedProject)
                     Spacer()
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)

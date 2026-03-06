@@ -2,13 +2,20 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import tempfile
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
-from app.launcher import UnityLaunchError, ensure_unity_package_manifest_dependency, launch_unity, resolve_unity_executable
+from app.launcher import (
+    UnityLaunchError,
+    ensure_unity_package_manifest_dependency,
+    find_running_unity_project_pid,
+    launch_unity,
+    resolve_unity_executable,
+)
 from app.models import ProjectRecord
 
 
@@ -46,6 +53,24 @@ class LauncherTests(unittest.TestCase):
             os.chmod(exe, 0o755)
             resolved = resolve_unity_executable(str(Path(tmp) / "Unity.app"))
             self.assertEqual(resolved, str(exe))
+
+    def test_find_running_unity_project_pid_matches_project_path(self) -> None:
+        project_path = "/tmp/My Project"
+        command = (
+            "123 /Applications/Unity/Hub/Editor/6000.0.0f1/Unity.app/Contents/MacOS/Unity "
+            "-projectPath '/tmp/My Project' -executeMethod Mcp.HubBootstrap.Start"
+        )
+        completed = subprocess.CompletedProcess(
+            args=["ps", "-axo", "pid=,command="],
+            returncode=0,
+            stdout=command + "\n",
+            stderr="",
+        )
+
+        with patch("app.launcher.subprocess.run", return_value=completed):
+            pid = find_running_unity_project_pid(project_path)
+
+        self.assertEqual(pid, 123)
 
     def test_manifest_dependency_added_when_missing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -16,18 +16,18 @@ struct ProjectRowView: View {
                     HStack(spacing: 6) {
                         Image(systemName: projectServerConnected ? "p.circle.fill" : "p.circle")
                             .foregroundStyle(iconColor(connected: projectServerConnected))
-                            .help(projectServerConnected ? "Hub connected (P)" : "Hub disconnected (P)")
+                            .help(projectStatusHelpText)
 
                         Image(systemName: unityServerConnected ? "u.circle.fill" : "u.circle")
                             .foregroundStyle(iconColor(connected: unityServerConnected))
-                            .help(unityServerConnected ? "Unity internal server connected (U)" : "Unity internal server disconnected (U)")
+                            .help(unityStatusHelpText)
 
                         if let message = errorMessage {
                             Image(systemName: "exclamationmark.triangle.fill")
                                 .foregroundStyle(isSelected ? Color.white : .orange)
                                 .padding(.vertical, 2)
                                 .contentShape(Rectangle())
-                                .help(message)
+                                .help("Project warning: \(message)")
                         }
                     }
                 }
@@ -68,17 +68,39 @@ struct ProjectRowView: View {
         activeSessionStatus?.lowercased() == "ready"
     }
 
+    private var hasLaunchedBefore: Bool {
+        project.lastSeenAt != nil
+    }
+
+    private var projectStatusHelpText: String {
+        projectServerConnected
+            ? "P: Hub service is reachable."
+            : "P: Hub service is not reachable."
+    }
+
+    private var unityStatusHelpText: String {
+        if unityServerConnected {
+            return "U: Unity session is connected and ready."
+        }
+        if activeSessionStatus?.lowercased() == "starting" {
+            return "U: Unity session is starting."
+        }
+        return "U: No active Unity session for this project."
+    }
+
     private var errorMessage: String? {
         switch project.health() {
         case .missingProjectPath:
             return "Project path not found: \(project.projectPath)"
         case .missingUnityPath:
-            return "Unity executable is missing or not runnable: \(project.unityPath)"
+            if hasLaunchedBefore {
+                return "Unity executable is missing or not runnable: \(project.unityPath)"
+            }
         case .unknown, .ready:
             break
         }
 
-        if project.hubStatus?.lowercased() == "dead" {
+        if hasLaunchedBefore && project.hubStatus?.lowercased() == "dead" {
             return "Session is dead. Relaunch this project."
         }
         return nil

@@ -50,6 +50,7 @@ class Database:
                     launch_token TEXT NOT NULL,
                     agent_token TEXT,
                     agent_endpoint TEXT,
+                    unity_pid INTEGER,
                     tool_manifest_json TEXT,
                     heartbeat_at TEXT,
                     created_at TEXT NOT NULL,
@@ -67,6 +68,12 @@ class Database:
             ]
             if "unity_version" not in project_columns:
                 conn.execute("ALTER TABLE projects ADD COLUMN unity_version TEXT")
+            session_columns = [
+                row["name"]
+                for row in conn.execute("PRAGMA table_info(sessions)").fetchall()
+            ]
+            if "unity_pid" not in session_columns:
+                conn.execute("ALTER TABLE sessions ADD COLUMN unity_pid INTEGER")
 
 
 def encode_json(value: object) -> str:

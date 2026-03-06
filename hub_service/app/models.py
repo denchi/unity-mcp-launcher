@@ -47,6 +47,7 @@ class SessionRecord(BaseModel):
     launch_token: str
     agent_token: Optional[str] = None
     agent_endpoint: Optional[str] = None
+    unity_pid: Optional[int] = None
     tool_manifest: dict[str, Any] = Field(default_factory=dict)
     heartbeat_at: Optional[datetime] = None
     created_at: datetime

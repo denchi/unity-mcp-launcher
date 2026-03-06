@@ -242,12 +242,16 @@ class HubRepositoryTests(unittest.TestCase):
         )
         self.assertIsNotNone(registered)
         self.assertIsNotNone(registered.agent_token)
+        updated = self.repo.set_session_unity_pid(session.session_id, 4242)
+        self.assertIsNotNone(updated)
+        self.assertEqual(updated.unity_pid, 4242)
 
         dead = self.repo.kill_session(session.session_id)
         self.assertIsNotNone(dead)
         self.assertEqual(dead.status, "dead")
         self.assertIsNone(dead.agent_token)
         self.assertIsNone(dead.agent_endpoint)
+        self.assertIsNone(dead.unity_pid)
 
     def test_revive_expired_session_from_heartbeat(self) -> None:
         self.repo.upsert_project(

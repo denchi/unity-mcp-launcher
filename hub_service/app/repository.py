@@ -119,9 +119,9 @@ class HubRepository:
                 """
                 INSERT INTO sessions (
                     session_id, client_id, project_id, status, lease_expires_at,
-                    launch_token, agent_token, agent_endpoint, tool_manifest_json,
+                    launch_token, agent_token, agent_endpoint, unity_pid, tool_manifest_json,
                     heartbeat_at, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, '{}', NULL, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, '{}', NULL, ?, ?)
                 """,
                 (
                     session_id,
@@ -137,6 +137,14 @@ class HubRepository:
             conn.execute(
                 "UPDATE projects SET status = ?, updated_at = ? WHERE project_id = ?",
                 ("starting" if status == "starting" else "ready", stamp, project_id),
+            )
+        return self.get_session(session_id)
+
+    def set_session_unity_pid(self, session_id: str, unity_pid: int) -> Optional[SessionRecord]:
+        with self.db.connect() as conn:
+            conn.execute(
+                "UPDATE sessions SET unity_pid = ?, updated_at = ? WHERE session_id = ?",
+                (unity_pid, now_iso(), session_id),
             )
         return self.get_session(session_id)
 
@@ -313,6 +321,7 @@ class HubRepository:
                 SET status = 'dead',
                     agent_token = NULL,
                     agent_endpoint = NULL,
+                    unity_pid = NULL,
                     updated_at = ?
                 WHERE session_id = ?
                 """,
@@ -407,6 +416,7 @@ class HubRepository:
             launch_token=row["launch_token"],
             agent_token=row["agent_token"],
             agent_endpoint=row["agent_endpoint"],
+            unity_pid=row["unity_pid"],
             tool_manifest=decode_json(row["tool_manifest_json"], {}),
             heartbeat_at=parse_dt(row["heartbeat_at"]),
             created_at=parse_dt(row["created_at"]),

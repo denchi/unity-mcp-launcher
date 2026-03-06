@@ -145,7 +145,7 @@ final class ProjectListViewModel: ObservableObject {
                 clientID: clientID,
                 includeDead: false
             )
-            let mapped = records.map(mapRecord)
+            let mapped = mapRecords(records)
             projects = mapped
             if selectedProjectID == nil || !projects.contains(where: { $0.id == selectedProjectID }) {
                 selectedProjectID = projects.first?.id
@@ -360,7 +360,8 @@ final class ProjectListViewModel: ObservableObject {
                     baseURL: hubBaseURL,
                     token: hubToken,
                     sessionID: session.sessionID,
-                    force: true
+                    force: true,
+                    terminateProcess: true
                 )
                 activeSessionsByProjectID.removeValue(forKey: selected.hubProjectID)
                 stopPollingSession(sessionID: session.sessionID)
@@ -368,7 +369,7 @@ final class ProjectListViewModel: ObservableObject {
                     projects[index].hubStatus = dead.status
                 }
             } catch {
-                showError(title: "Kill Session Failed", error: error)
+                showError(title: "Force Quit Failed", error: error)
             }
         }
     }
@@ -520,18 +521,79 @@ final class ProjectListViewModel: ObservableObject {
         }
     }
 
+    private func mapRecords(_ records: [HubProjectRecord]) -> [UnityProject] {
+        var mapped: [UnityProject] = []
+        var seenIDs: Set<UUID> = []
+
+        for record in records {
+            let project = mapRecord(record)
+            if seenIDs.insert(project.id).inserted {
+                mapped.append(project)
+            }
+        }
+
+        return mapped
+    }
+
     private func mapRecord(_ record: HubProjectRecord) -> UnityProject {
-        UnityProject(
-            id: UUID(uuidString: record.projectID) ?? UUID(),
-            name: record.name,
-            projectPath: record.projectPath,
-            unityPath: record.unityPath,
-            tags: record.tags,
+        let stableID = stableProjectID(for: record)
+        return UnityProject(
+            id: stableID,
+            name: record.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? "Untitled Project"
+                : record.name,
+            projectPath: record.projectPath.trimmingCharacters(in: .whitespacesAndNewlines),
+            unityPath: record.unityPath.trimmingCharacters(in: .whitespacesAndNewlines),
+            tags: record.tags.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty },
             hubStatus: record.status,
             lastSeenAt: record.lastSeenAt,
             createdAt: Date(),
             lastOpenedAt: record.lastSeenAt
         )
+    }
+
+    private func stableProjectID(for record: HubProjectRecord) -> UUID {
+        let trimmedID = record.projectID.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let parsed = UUID(uuidString: trimmedID) {
+            return parsed
+        }
+
+        let fallbackSeed: String
+        if trimmedID.isEmpty {
+            fallbackSeed = "\(record.name)|\(record.projectPath)|\(record.unityPath)"
+        } else {
+            fallbackSeed = trimmedID
+        }
+        return deterministicUUID(seed: fallbackSeed)
+    }
+
+    private func deterministicUUID(seed: String) -> UUID {
+        var forwardHash: UInt64 = 1_469_598_103_934_665_603
+        var reverseHash: UInt64 = 1_099_511_628_211
+
+        for byte in seed.utf8 {
+            forwardHash ^= UInt64(byte)
+            forwardHash &*= 1_099_511_628_211
+        }
+
+        for byte in seed.utf8.reversed() {
+            reverseHash ^= UInt64(byte)
+            reverseHash &*= 1_469_598_103_934_665_603
+        }
+
+        var bytes: [UInt8] = []
+        bytes.reserveCapacity(16)
+        bytes.append(contentsOf: withUnsafeBytes(of: forwardHash.bigEndian, Array.init))
+        bytes.append(contentsOf: withUnsafeBytes(of: reverseHash.bigEndian, Array.init))
+        bytes[6] = (bytes[6] & 0x0F) | 0x40
+        bytes[8] = (bytes[8] & 0x3F) | 0x80
+
+        return UUID(uuid: (
+            bytes[0], bytes[1], bytes[2], bytes[3],
+            bytes[4], bytes[5], bytes[6], bytes[7],
+            bytes[8], bytes[9], bytes[10], bytes[11],
+            bytes[12], bytes[13], bytes[14], bytes[15]
+        ))
     }
 
     private func updatePreferredUnityLaunchVersion(force: Bool = false) {

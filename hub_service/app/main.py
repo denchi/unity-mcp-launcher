@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+import os
+import signal
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
@@ -11,6 +13,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, status
 from .config import settings
 from .db import Database
 from .launcher import UnityLaunchError, allocate_loopback_url, launch_unity
+from .launcher import find_running_unity_project_pid
 from .models import (
     ForwardCallRequest,
     ForwardCallResponse,
@@ -42,7 +45,7 @@ from .unity_registry import (
     remove_custom_installation_by_path,
 )
 
-app = FastAPI(title="Unity MCP Hub", version="0.1.0")
+app = FastAPI(title="Unity MCP Hub", version="0.1.4")
 db = Database(settings.database_path)
 repo = HubRepository(db)
 logger = logging.getLogger("uvicorn.error")
@@ -209,6 +212,17 @@ def is_within_starting_grace(session: SessionRecord, now: Optional[datetime] = N
     return age_seconds < settings.starting_session_grace_seconds
 
 
+def terminate_unity_process(unity_pid: Optional[int]) -> None:
+    if not unity_pid:
+        return
+    try:
+        os.kill(unity_pid, signal.SIGKILL)
+    except ProcessLookupError:
+        return
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"failed to terminate Unity process {unity_pid}: {exc}") from exc
+
+
 @app.get("/health", response_model=HealthResponse)
 def health() -> HealthResponse:
     return HealthResponse(status="ok", now=datetime.now(timezone.utc))
@@ -334,6 +348,17 @@ def select_project(payload: SelectProjectRequest) -> SelectProjectResponse:
     # Launch requests from the app should start Unity explicitly; persisted project status
     # can be stale after crashes/restarts, so do not gate launch on "ready".
     launched = payload.auto_launch
+    if launched:
+        existing_pid = find_running_unity_project_pid(project.project_path)
+        if existing_pid is not None:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Unity project is already running (pid {existing_pid}) for {project.project_path}. "
+                    "Force quit the existing process before launching again."
+                ),
+            )
+
     session = repo.create_session(
         client_id=payload.client_id,
         project_id=project.project_id,
@@ -350,7 +375,7 @@ def select_project(payload: SelectProjectRequest) -> SelectProjectResponse:
                 project.project_id,
                 runtime_server_url,
             )
-            launch_unity(
+            unity_pid = launch_unity(
                 resolve_project_for_launch(project, payload.unity_version),
                 payload.launch_headless,
                 resolve_execute_method(payload.execute_method),
@@ -358,6 +383,7 @@ def select_project(payload: SelectProjectRequest) -> SelectProjectResponse:
                 package_name=settings.unity_agent_package_name,
                 package_git_url=settings.unity_agent_package_git_url,
             )
+            session = repo.set_session_unity_pid(session.session_id, unity_pid) or session
         except UnityLaunchError as exc:
             repo.kill_session(session.session_id)
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -390,12 +416,15 @@ def renew_session(session_id: str) -> SessionRecord:
 
 
 @app.post("/sessions/{session_id}/kill", response_model=SessionRecord, dependencies=[Depends(require_auth)])
-def kill_session(session_id: str, force: bool = False) -> SessionRecord:
+def kill_session(session_id: str, force: bool = False, terminate_process: bool = False) -> SessionRecord:
     current = repo.get_session(session_id)
     if not current:
         raise HTTPException(status_code=404, detail="session not found")
     if not force and is_within_starting_grace(current):
         return current
+
+    if terminate_process:
+        terminate_unity_process(current.unity_pid)
 
     session = repo.kill_session(session_id)
     if not session:

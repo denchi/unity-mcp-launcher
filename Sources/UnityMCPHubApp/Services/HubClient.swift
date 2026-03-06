@@ -308,8 +308,14 @@ final class HubClient {
         )
     }
 
-    func killSession(baseURL: String, token: String, sessionID: String, force: Bool = false) async throws -> HubSessionRecord {
-        let path = "/sessions/\(sessionID)/kill?force=\(force ? "true" : "false")"
+    func killSession(
+        baseURL: String,
+        token: String,
+        sessionID: String,
+        force: Bool = false,
+        terminateProcess: Bool = false
+    ) async throws -> HubSessionRecord {
+        let path = "/sessions/\(sessionID)/kill?force=\(force ? "true" : "false")&terminate_process=\(terminateProcess ? "true" : "false")"
         return try await request(
             method: "POST",
             baseURL: baseURL,

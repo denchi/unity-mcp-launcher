@@ -1,4 +1,4 @@
-.PHONY: run run-hub run-hub-mcp test-hub build
+.PHONY: run run-hub run-hub-mcp test-hub build package-macos
 
 run:
 	cd /Users/denis/dev/unity-mcp-launcher && swift run UnityMCPHubApp
@@ -14,3 +14,6 @@ build:
 
 test-hub:
 	cd /Users/denis/dev/unity-mcp-launcher/hub_service && python3 -m unittest discover -s tests -p 'test_*.py'
+
+package-macos:
+	cd /Users/denis/dev/unity-mcp-launcher && ./package_macos_app.sh $(VERSION)
