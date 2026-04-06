@@ -36,7 +36,8 @@ enum HubProcessError: LocalizedError {
 actor HubProcessManager {
     private var process: Process?
     private let session = URLSession(configuration: .ephemeral)
-    private static let managedPIDKey = "hub.managed_pid"
+    private static let managedProcessInfoKey = "hub.managed_process_info"
+    private static let legacyManagedPIDKey = "hub.managed_pid"
     private var hubPythonPath: String = "python3"
     private var gatewayPythonPath: String?
 
@@ -44,6 +45,11 @@ actor HubProcessManager {
         let exitCode: Int32
         let stdout: String
         let stderr: String
+    }
+
+    private struct ManagedProcessInfo {
+        let pid: Int32
+        let startSignature: String
     }
 
     private struct PythonInterpreter {
@@ -65,6 +71,7 @@ actor HubProcessManager {
 
     func ensureRunning(
         baseURL: String,
+        hubAuthToken: String,
         defaultExecuteMethod: String,
         unityAgentPackageName: String,
         unityAgentPackageGitURL: String
@@ -79,6 +86,7 @@ actor HubProcessManager {
         if process?.isRunning != true {
             try startManagedProcess(
                 baseURL: baseURL,
+                hubAuthToken: hubAuthToken,
                 defaultExecuteMethod: defaultExecuteMethod,
                 unityAgentPackageName: unityAgentPackageName,
                 unityAgentPackageGitURL: unityAgentPackageGitURL
@@ -101,6 +109,7 @@ actor HubProcessManager {
 
     private func startManagedProcess(
         baseURL: String,
+        hubAuthToken: String,
         defaultExecuteMethod: String,
         unityAgentPackageName: String,
         unityAgentPackageGitURL: String
@@ -127,6 +136,10 @@ actor HubProcessManager {
         var env = ProcessInfo.processInfo.environment
         env["HUB_HOST"] = host
         env["HUB_PORT"] = String(port)
+        let authToken = hubAuthToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !authToken.isEmpty {
+            env["HUB_AUTH_TOKEN"] = authToken
+        }
         let executeMethod = defaultExecuteMethod.trimmingCharacters(in: .whitespacesAndNewlines)
         if !executeMethod.isEmpty {
             env["HUB_DEFAULT_EXECUTE_METHOD"] = executeMethod
@@ -144,39 +157,133 @@ actor HubProcessManager {
         do {
             try process.run()
             self.process = process
-            persistManagedPID(Int32(process.processIdentifier))
+            persistManagedProcessInfo(Int32(process.processIdentifier))
         } catch {
             throw HubProcessError.startFailed(error.localizedDescription)
         }
     }
 
-    private func persistManagedPID(_ pid: Int32) {
-        UserDefaults.standard.set(Int(pid), forKey: Self.managedPIDKey)
+    private func persistManagedProcessInfo(_ pid: Int32) {
+        guard let startSignature = Self.processStartSignature(pid) else {
+            clearPersistedPID()
+            return
+        }
+        UserDefaults.standard.set(
+            [
+                "pid": Int(pid),
+                "start_signature": startSignature,
+            ],
+            forKey: Self.managedProcessInfoKey
+        )
+        UserDefaults.standard.removeObject(forKey: Self.legacyManagedPIDKey)
     }
 
     private func clearPersistedPID() {
-        UserDefaults.standard.removeObject(forKey: Self.managedPIDKey)
+        UserDefaults.standard.removeObject(forKey: Self.managedProcessInfoKey)
+        UserDefaults.standard.removeObject(forKey: Self.legacyManagedPIDKey)
+    }
+
+    private func loadPersistedProcessInfo() -> ManagedProcessInfo? {
+        if let raw = UserDefaults.standard.dictionary(forKey: Self.managedProcessInfoKey),
+           let pid = raw["pid"] as? Int,
+           let start = raw["start_signature"] as? String,
+           pid > 0,
+           !start.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return ManagedProcessInfo(pid: Int32(pid), startSignature: start)
+        }
+        return nil
     }
 
     private func cleanupStalePersistedPID() {
-        let raw = UserDefaults.standard.integer(forKey: Self.managedPIDKey)
-        guard raw > 0 else { return }
-        if kill(pid_t(raw), 0) != 0 {
+        guard let info = loadPersistedProcessInfo() else {
+            clearPersistedPID()
+            return
+        }
+        if !Self.isExpectedManagedProcess(info) {
             clearPersistedPID()
         }
     }
 
     nonisolated static func killPersistedManagedProcess() {
         let defaults = UserDefaults.standard
-        let raw = defaults.integer(forKey: managedPIDKey)
-        guard raw > 0 else { return }
-
-        let pid = pid_t(raw)
-        if kill(pid, 0) == 0 {
-            _ = kill(pid, SIGTERM)
+        defer {
+            defaults.removeObject(forKey: managedProcessInfoKey)
+            defaults.removeObject(forKey: legacyManagedPIDKey)
         }
 
-        defaults.removeObject(forKey: managedPIDKey)
+        guard let raw = defaults.dictionary(forKey: managedProcessInfoKey),
+              let pid = raw["pid"] as? Int,
+              let startSignature = raw["start_signature"] as? String,
+              pid > 0,
+              !startSignature.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else {
+            return
+        }
+
+        let info = ManagedProcessInfo(pid: Int32(pid), startSignature: startSignature)
+        guard isExpectedManagedProcess(info) else {
+            return
+        }
+
+        _ = kill(info.pid, SIGTERM)
+    }
+
+    nonisolated private static func isExpectedManagedProcess(_ info: ManagedProcessInfo) -> Bool {
+        if kill(info.pid, 0) != 0 {
+            return false
+        }
+        guard let currentSignature = processStartSignature(info.pid),
+              currentSignature == info.startSignature
+        else {
+            return false
+        }
+        guard let commandLine = processCommandLine(info.pid)?.lowercased() else {
+            return false
+        }
+        return commandLine.contains("python") && commandLine.contains("run.py")
+    }
+
+    nonisolated private static func processStartSignature(_ pid: Int32) -> String? {
+        guard let output = runSystemCommand(
+            ["/bin/ps", "-p", String(pid), "-o", "lstart="]
+        )?.stdout else {
+            return nil
+        }
+        let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    nonisolated private static func processCommandLine(_ pid: Int32) -> String? {
+        guard let output = runSystemCommand(
+            ["/bin/ps", "-p", String(pid), "-o", "command="]
+        )?.stdout else {
+            return nil
+        }
+        let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    nonisolated private static func runSystemCommand(_ arguments: [String]) -> CommandResult? {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        process.arguments = arguments
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        process.standardOutput = stdoutPipe
+        process.standardError = stderrPipe
+
+        do {
+            try process.run()
+        } catch {
+            return nil
+        }
+
+        process.waitUntilExit()
+        let stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+        let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+        let stdout = String(data: stdoutData, encoding: .utf8) ?? ""
+        let stderr = String(data: stderrData, encoding: .utf8) ?? ""
+        return CommandResult(exitCode: process.terminationStatus, stdout: stdout, stderr: stderr)
     }
 
     private func waitForHealth(baseURL: String) async throws {

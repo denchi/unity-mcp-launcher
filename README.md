@@ -1,6 +1,6 @@
-# Unity MCP Launcher
+# Unity MCP Hub
 
-Unity MCP Launcher is a macOS app that manages Unity projects and launches them in a hub-based MCP workflow.
+Unity MCP Hub is a macOS app that manages Unity projects and launches them in a hub-based MCP workflow.
 
 It provides:
 
@@ -57,7 +57,7 @@ In development mode (`swift run`) a terminal session is expected.
 
 1. Open **Settings** and set:
    - Hub URL (default: `http://127.0.0.1:8787`)
-   - Hub token (default: `dev-shared-secret`)
+   - Hub token (auto-generated per machine; stored in macOS Keychain)
    - Optional Unity package override (name + git URL)
 2. Add one or more Unity projects.
 3. Open **Unity Installations**:
@@ -68,6 +68,7 @@ In development mode (`swift run`) a terminal session is expected.
    - Select which installed Unity version to launch with
    - If the required version is not installed, a warning icon is shown
 5. Click **Launch Project**.
+   - If Unity is already running for the selected project, the UI shows **Connect to Running Unity** instead of forcing a relaunch.
 6. The app lives in the macOS status bar. Click the status icon to show/hide the main UI.
 
 ## Unity Side Setup (required)
@@ -120,7 +121,9 @@ make run-hub
 make run-hub-mcp
 make build
 make test-hub
-make package-macos VERSION=v0.1.4
+make test-gateway-smoke
+make ship-check
+make package-macos VERSION=v0.1.5
 ```
 
 ## Shipping / Installation (best practice)
@@ -130,15 +133,30 @@ For end users, distribute a signed/notarized `.dmg` containing the `.app` bundle
 Build local `.app` + `.dmg`:
 
 ```bash
-./package_macos_app.sh v0.1.4
+./package_macos_app.sh v0.1.5
+```
+
+Build signed + notarized DMG for distribution:
+
+```bash
+export SIGN_IDENTITY="Developer ID Application: YOUR NAME (TEAMID)"
+export BUNDLE_ID="com.denchi.unity-mcp-hub"
+export NOTARIZE=1
+# Preferred if configured:
+export NOTARY_KEYCHAIN_PROFILE="AC_NOTARY_PROFILE"
+# Or use Apple ID auth:
+# export APPLE_ID="you@example.com"
+# export TEAM_ID="TEAMID1234"
+# export APP_SPECIFIC_PASSWORD="xxxx-xxxx-xxxx-xxxx"
+./package_macos_app.sh v0.1.5
 ```
 
 Output:
 
-- `dist/Unity MCP Launcher.app`
-- `dist/UnityMCPLauncher-v0.1.4.dmg`
+- `dist/Unity MCP Hub.app`
+- `dist/UnityMCPHub-v0.1.5.dmg`
 
-Install flow: user opens the DMG and drags **Unity MCP Launcher.app** to **Applications**.
+Install flow: user opens the DMG and drags **Unity MCP Hub.app** to **Applications**.
 
 ## Notes
 
