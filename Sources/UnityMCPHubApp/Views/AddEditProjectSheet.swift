@@ -12,6 +12,7 @@ struct AddEditProjectSheet: View {
     @State private var projectPath: String
     @State private var unityPath: String
     @State private var tags: String
+    private var isAddMode: Bool { initial == nil }
 
     init(title: String, initial: UnityProject?, onSave: @escaping (UnityProject) -> Void) {
         self.title = title
@@ -19,7 +20,7 @@ struct AddEditProjectSheet: View {
         self.onSave = onSave
         _name = State(initialValue: initial?.name ?? "")
         _projectPath = State(initialValue: initial?.projectPath ?? "")
-        _unityPath = State(initialValue: initial?.unityPath ?? "/Applications/Unity/Hub/Editor/6000.0.0f1/Unity.app/Contents/MacOS/Unity")
+        _unityPath = State(initialValue: initial?.unityPath ?? "")
         _tags = State(initialValue: initial?.tags.joined(separator: ", ") ?? "")
     }
 
@@ -46,12 +47,14 @@ struct AddEditProjectSheet: View {
                 }
             }
 
-            LabeledContent("Unity Binary") {
-                HStack {
-                    TextField("/Applications/.../Unity", text: $unityPath)
-                    Button("Browse") {
-                        if let selected = chooseExecutable() {
-                            unityPath = selected.path
+            if !isAddMode {
+                LabeledContent("Unity Binary") {
+                    HStack {
+                        TextField("/Applications/.../Unity", text: $unityPath)
+                        Button("Browse") {
+                            if let selected = chooseExecutable() {
+                                unityPath = selected.path
+                            }
                         }
                     }
                 }
@@ -87,7 +90,7 @@ struct AddEditProjectSheet: View {
     }
 
     private var formIsValid: Bool {
-        !normalized(name).isEmpty && !normalized(projectPath).isEmpty && !normalized(unityPath).isEmpty
+        !normalized(name).isEmpty && !normalized(projectPath).isEmpty
     }
 
     private func normalized(_ value: String) -> String {

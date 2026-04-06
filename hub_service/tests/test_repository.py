@@ -64,6 +64,33 @@ class HubRepositoryTests(unittest.TestCase):
         self.assertIsNotNone(heartbeat)
         self.assertIsNotNone(heartbeat.heartbeat_at)
 
+    def test_create_or_reuse_active_session_reuses_existing_project_session(self) -> None:
+        self.repo.upsert_project(
+            ProjectCreateRequest(
+                project_id="p2b",
+                name="Dungeon Reuse",
+                project_path="/tmp/p2b",
+                unity_path="/Applications/Unity",
+                tags=[],
+            )
+        )
+        first, created_first = self.repo.create_or_reuse_active_session(
+            client_id="client-a",
+            project_id="p2b",
+            status="starting",
+            lease_expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+        )
+        second, created_second = self.repo.create_or_reuse_active_session(
+            client_id="client-b",
+            project_id="p2b",
+            status="starting",
+            lease_expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+        )
+
+        self.assertTrue(created_first)
+        self.assertFalse(created_second)
+        self.assertEqual(first.session_id, second.session_id)
+
     def test_expire_old_sessions(self) -> None:
         self.repo.upsert_project(
             ProjectCreateRequest(
@@ -326,6 +353,81 @@ class HubRepositoryTests(unittest.TestCase):
         fallback = self.repo.get_active_session_for_project("p12")
         self.assertIsNotNone(fallback)
         self.assertEqual(fallback.session_id, starting.session_id)
+
+    def test_kill_session_sets_project_idle_when_no_active_sessions(self) -> None:
+        self.repo.upsert_project(
+            ProjectCreateRequest(
+                project_id="p13",
+                name="IdleAfterKillProject",
+                project_path="/tmp/p13",
+                unity_path="/Applications/Unity",
+                tags=[],
+            )
+        )
+        ready = self.repo.create_session(
+            client_id="client-idle",
+            project_id="p13",
+            status="ready",
+            lease_expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+        )
+
+        self.repo.kill_session(ready.session_id)
+        project = self.repo.get_project("p13")
+        self.assertIsNotNone(project)
+        self.assertEqual(project.status, "idle")
+
+    def test_kill_ready_session_keeps_project_starting_when_starting_session_exists(self) -> None:
+        self.repo.upsert_project(
+            ProjectCreateRequest(
+                project_id="p14",
+                name="StartingFallbackProject",
+                project_path="/tmp/p14",
+                unity_path="/Applications/Unity",
+                tags=[],
+            )
+        )
+        starting = self.repo.create_session(
+            client_id="client-starting",
+            project_id="p14",
+            status="starting",
+            lease_expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+        )
+        ready = self.repo.create_session(
+            client_id="client-starting",
+            project_id="p14",
+            status="ready",
+            lease_expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+        )
+
+        self.repo.kill_session(ready.session_id)
+        project = self.repo.get_project("p14")
+        self.assertIsNotNone(project)
+        self.assertEqual(project.status, "starting")
+        active = self.repo.get_active_session_for_project("p14")
+        self.assertIsNotNone(active)
+        self.assertEqual(active.session_id, starting.session_id)
+
+    def test_refresh_project_statuses_reconciles_stale_dead_to_idle(self) -> None:
+        self.repo.upsert_project(
+            ProjectCreateRequest(
+                project_id="p15",
+                name="StaleDeadProject",
+                project_path="/tmp/p15",
+                unity_path="/Applications/Unity",
+                tags=[],
+            )
+        )
+        with self.db.connect() as conn:
+            conn.execute(
+                "UPDATE projects SET status = 'dead' WHERE project_id = ?",
+                ("p15",),
+            )
+
+        updates = self.repo.refresh_project_statuses()
+        self.assertEqual(updates, 1)
+        project = self.repo.get_project("p15")
+        self.assertIsNotNone(project)
+        self.assertEqual(project.status, "idle")
 
 
 if __name__ == "__main__":

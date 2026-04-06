@@ -13,6 +13,7 @@ from app.launcher import (
     UnityLaunchError,
     ensure_unity_package_manifest_dependency,
     find_running_unity_project_pid,
+    focus_unity_editor_window,
     launch_unity,
     resolve_unity_executable,
 )
@@ -71,6 +72,39 @@ class LauncherTests(unittest.TestCase):
             pid = find_running_unity_project_pid(project_path)
 
         self.assertEqual(pid, 123)
+
+    def test_focus_unity_editor_window_uses_osascript(self) -> None:
+        completed = subprocess.CompletedProcess(
+            args=["osascript"],
+            returncode=0,
+            stdout="",
+            stderr="",
+        )
+
+        with patch("app.launcher.subprocess.run", return_value=completed) as run_mock:
+            focus_unity_editor_window(2222)
+
+        run_args = run_mock.call_args.args[0]
+        self.assertEqual(run_args[0], "osascript")
+        self.assertEqual(run_args[1], "-e")
+        self.assertIn("unix id is 2222", run_args[2])
+
+    def test_focus_unity_editor_window_requires_pid(self) -> None:
+        with self.assertRaises(UnityLaunchError):
+            focus_unity_editor_window(None)
+
+    def test_focus_unity_editor_window_raises_on_script_failure(self) -> None:
+        completed = subprocess.CompletedProcess(
+            args=["osascript"],
+            returncode=1,
+            stdout="",
+            stderr="not authorized",
+        )
+        with patch("app.launcher.subprocess.run", return_value=completed):
+            with self.assertRaises(UnityLaunchError) as raised:
+                focus_unity_editor_window(3333)
+
+        self.assertIn("3333", str(raised.exception))
 
     def test_manifest_dependency_added_when_missing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

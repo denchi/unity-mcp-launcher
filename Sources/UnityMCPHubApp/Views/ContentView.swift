@@ -21,8 +21,16 @@ struct ContentView: View {
                     )
                         .tag(project.id)
                         .contextMenu {
-                            if projectSession != nil {
-                                Button("Kill Project", role: .destructive) {
+                            if viewModel.shouldOfferConnect(for: project) {
+                                Button("Connect to Running Unity") {
+                                    if viewModel.selectedProjectID != project.id {
+                                        viewModel.selectedProjectID = project.id
+                                    }
+                                    viewModel.connectSelectedRunningProject()
+                                }
+                            }
+                            if viewModel.shouldOfferKill(for: project) {
+                                Button("Kill Project Session", role: .destructive) {
                                     if viewModel.selectedProjectID != project.id {
                                         viewModel.selectedProjectID = project.id
                                     }
@@ -188,6 +196,13 @@ struct ContentView: View {
                         Text(project.hubStatus?.capitalized ?? "Unknown")
                     }
 
+                    if viewModel.selectedProjectSession == nil,
+                       let unityPID = viewModel.selectedProjectRunningUnityPID {
+                        LabeledContent("Unity Process") {
+                            Text("Running (pid \(unityPID))")
+                        }
+                    }
+
                     if let session = viewModel.activeSessionsByProjectID[project.hubProjectID] {
                         LabeledContent("Session") {
                             Text(session.sessionID)
@@ -261,14 +276,20 @@ struct ContentView: View {
                         }
                     }
 
-                    if viewModel.canLaunchSelectedProject {
+                    if viewModel.shouldOfferConnectSelectedProject {
+                        Button("Connect to Running Unity") {
+                            viewModel.connectSelectedRunningProject()
+                        }
+                        .keyboardShortcut(.defaultAction)
+                        .disabled(viewModel.isBusy)
+                    } else if viewModel.canLaunchSelectedProject {
                         Button("Launch Project") {
                             viewModel.launchSelectedProject()
                         }
                         .keyboardShortcut(.defaultAction)
                         .disabled(viewModel.isBusy)
-                    } else if viewModel.selectedProjectSession != nil {
-                        Button("Kill Project", role: .destructive) {
+                    } else if viewModel.shouldOfferKillSelectedProjectSession {
+                        Button("Kill Project Session", role: .destructive) {
                             viewModel.killSelectedProjectSession()
                         }
                         .disabled(viewModel.isBusy)

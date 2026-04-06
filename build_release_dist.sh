@@ -3,8 +3,8 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-VERSION="${1:-v0.1.4}"
-PKG="UnityMCPLauncher-${VERSION}-macos"
+VERSION="${1:-v0.1.5}"
+PKG="UnityMCPHub-${VERSION}-macos"
 
 cd "${ROOT_DIR}"
 

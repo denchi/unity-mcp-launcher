@@ -48,12 +48,6 @@ struct UnityInstallationsSheet: View {
                     .foregroundStyle(.secondary)
             }
             Spacer()
-            Button("Browse") {
-                if let selected = chooseUnityInstallation() {
-                    viewModel.registerLocalUnityInstallation(selected.path)
-                }
-            }
-            .disabled(viewModel.isBusy)
             Button("Refresh") {
                 Task {
                     await viewModel.refreshUnityInstallations()
@@ -86,7 +80,7 @@ struct UnityInstallationsSheet: View {
 
     private var installSection: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("Install a version")
+            Text("Add Unity Versions")
                 .font(.headline)
             HStack {
                 TextField("Unity version (e.g. 2023.3.0f1)", text: $viewModel.unityVersionInstallInput)
@@ -98,6 +92,18 @@ struct UnityInstallationsSheet: View {
                     viewModel.isBusy
                         || viewModel.unityVersionInstallInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 )
+            }
+            HStack {
+                Text("Use a version already installed on this Mac")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("Select Installed from Disk") {
+                    if let selected = chooseUnityInstallation() {
+                        viewModel.registerLocalUnityInstallation(selected.path)
+                    }
+                }
+                .disabled(viewModel.isBusy)
             }
         }
     }

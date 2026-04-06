@@ -11,7 +11,7 @@ struct UnityMCPHubApp: App {
     }
 
     var body: some Scene {
-        WindowGroup {
+        WindowGroup("Unity MCP Hub") {
             ContentView(viewModel: viewModel)
                 .frame(minWidth: 960, minHeight: 600)
                 .background(MainWindowConfigurator())

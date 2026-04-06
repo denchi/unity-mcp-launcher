@@ -113,6 +113,7 @@ struct MainWindowConfigurator: NSViewRepresentable {
             guard let window = nsView.window else {
                 return
             }
+            window.title = "Unity MCP Hub"
             window.identifier = mainWindowIdentifier
             if window.delegate !== context.coordinator.windowDelegate {
                 window.delegate = context.coordinator.windowDelegate
