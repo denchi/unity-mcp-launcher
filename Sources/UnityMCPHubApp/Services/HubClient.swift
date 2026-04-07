@@ -42,15 +42,24 @@ struct HubUnityVersionResponse: Codable {
     }
 }
 
+struct HubProjectRuntimeState: Codable {
+    let unityRunning: Bool
+    let unityPID: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case unityRunning = "unity_running"
+        case unityPID = "unity_pid"
+    }
+}
+
 struct HubSessionRecord: Codable {
     let sessionID: String
     let clientID: String
     let projectID: String
     let status: String
     let leaseExpiresAt: Date
-    let launchToken: String
-    let agentToken: String?
     let agentEndpoint: String?
+    let unityPID: Int?
     let heartbeatAt: Date?
 
     enum CodingKeys: String, CodingKey {
@@ -59,9 +68,8 @@ struct HubSessionRecord: Codable {
         case projectID = "project_id"
         case status
         case leaseExpiresAt = "lease_expires_at"
-        case launchToken = "launch_token"
-        case agentToken = "agent_token"
         case agentEndpoint = "agent_endpoint"
+        case unityPID = "unity_pid"
         case heartbeatAt = "heartbeat_at"
     }
 }
@@ -69,6 +77,13 @@ struct HubSessionRecord: Codable {
 struct HubSelectProjectResponse: Codable {
     let session: HubSessionRecord
     let launched: Bool
+    let attachedToRunning: Bool?
+
+    enum CodingKeys: String, CodingKey {
+        case session
+        case launched
+        case attachedToRunning = "attached_to_running"
+    }
 }
 
 struct HubErrorMessage: Codable {
@@ -99,6 +114,7 @@ struct HubSelectProjectRequest: Codable {
     let mostRecent: Bool
     let autoLaunch: Bool
     let launchHeadless: Bool
+    let attachIfRunning: Bool
     let executeMethod: String?
     let unityVersion: String?
 
@@ -110,6 +126,7 @@ struct HubSelectProjectRequest: Codable {
         case mostRecent = "most_recent"
         case autoLaunch = "auto_launch"
         case launchHeadless = "launch_headless"
+        case attachIfRunning = "attach_if_running"
         case executeMethod = "execute_method"
         case unityVersion = "unity_version"
     }
@@ -326,11 +343,23 @@ final class HubClient {
         )
     }
 
-    func listSessions(baseURL: String, token: String, clientID: String, includeDead: Bool = false) async throws -> [HubSessionRecord] {
-        guard let encodedClientID = clientID.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) else {
-            throw HubClientError.invalidBaseURL
+    func listSessions(
+        baseURL: String,
+        token: String,
+        clientID: String? = nil,
+        includeDead: Bool = false
+    ) async throws -> [HubSessionRecord] {
+        var queryItems: [String] = ["include_dead=\(includeDead ? "true" : "false")"]
+        if let clientID {
+            let trimmedClientID = clientID.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmedClientID.isEmpty {
+                guard let encodedClientID = trimmedClientID.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) else {
+                    throw HubClientError.invalidBaseURL
+                }
+                queryItems.append("client_id=\(encodedClientID)")
+            }
         }
-        let path = "/sessions?client_id=\(encodedClientID)&include_dead=\(includeDead ? "true" : "false")"
+        let path = "/sessions?\(queryItems.joined(separator: "&"))"
         return try await request(
             method: "GET",
             baseURL: baseURL,
@@ -465,6 +494,18 @@ final class HubClient {
             responseType: HubUnityVersionResponse.self
         )
         return response.unityVersion
+    }
+
+    func getProjectRuntimeState(baseURL: String, token: String, projectID: String) async throws -> HubProjectRuntimeState {
+        let encodedProjectID = try percentEncodedPathComponent(projectID)
+        return try await request(
+            method: "GET",
+            baseURL: baseURL,
+            path: "/projects/\(encodedProjectID)/runtime-state",
+            token: token,
+            body: Optional<Int>.none,
+            responseType: HubProjectRuntimeState.self
+        )
     }
 
     private func forwardRequest(

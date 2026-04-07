@@ -9,6 +9,7 @@ FastAPI + SQLite control-plane backend for Unity MCP orchestration.
 - Launches Unity projects on demand
 - Accepts agent registration + heartbeat
 - Proxies calls from clients to selected agent endpoint
+- Focuses the Unity Editor window for an active session (`POST /sessions/{session_id}/focus`)
 
 ## Quick start
 
@@ -22,11 +23,13 @@ Server defaults:
 
 - Host: `127.0.0.1`
 - Port: `8787`
-- Auth token: `dev-shared-secret`
+- Auth token: loaded from `HUB_AUTH_TOKEN`, or from `~/.unity-mcp-hub/auth_token` (auto-generated if missing)
 - SQLite DB: `./hub_service/hub.db`
 
 Optional integration env vars:
 
+- `HUB_AUTH_TOKEN` (overrides auth token directly)
+- `HUB_AUTH_TOKEN_FILE` (token file path; default `~/.unity-mcp-hub/auth_token`)
 - `HUB_AGENT_HUB_URL` (what Unity agents should call back to; default `http://127.0.0.1:<port>`)
 - `HUB_DEFAULT_EXECUTE_METHOD` (optional Unity `-executeMethod` value)
   - For ChatGptAssistant use: `Mcp.HubBootstrap.Start`
@@ -54,6 +57,10 @@ Use header `X-Hub-Token: <token>` on all control endpoints.
 5. Agent heartbeats with `session_id` + `agent_token`.
 6. Client calls `POST /sessions/{session_id}/forward` to proxy MCP calls.
 
+If Unity is already running for the project, callers can set `attach_if_running=true` on
+`POST /sessions/select` to create a starting session bound to that running Unity process
+instead of returning a duplicate-launch 409.
+
 When the hub launches Unity from `POST /sessions/select`, it injects:
 
 - `UNITY_MCP_HUB_URL`
@@ -66,6 +73,9 @@ When the hub launches Unity from `POST /sessions/select`, it injects:
 
 - `target: "agent"` (default) -> forwards to registered `endpoint`
 - `target: "bridge"` -> forwards to `tool_manifest.bridge_url`
+
+`GET /projects/{project_id}/runtime-state` returns Unity process detection for a project
+(`unity_running` and optional `unity_pid`).
 
 ## Test repository logic
 

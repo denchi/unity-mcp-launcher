@@ -4,6 +4,7 @@ import os
 import re
 import socket
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Literal, Optional
 from urllib.parse import quote
 
@@ -21,8 +22,26 @@ def _default_client_id() -> str:
     return _slugify(socket.gethostname())
 
 
+def _default_auth_token_file() -> Path:
+    explicit = os.getenv("HUB_AUTH_TOKEN_FILE", "").strip()
+    if explicit:
+        return Path(explicit).expanduser()
+    return Path.home() / ".unity-mcp-hub" / "auth_token"
+
+
+def _default_hub_token() -> str:
+    explicit = os.getenv("HUB_MCP_HUB_TOKEN", "").strip()
+    if explicit:
+        return explicit
+    token_file = _default_auth_token_file()
+    try:
+        return token_file.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
 HUB_URL = os.getenv("HUB_MCP_HUB_URL", "http://127.0.0.1:8787").strip().rstrip("/")
-HUB_TOKEN = os.getenv("HUB_MCP_HUB_TOKEN", "dev-shared-secret").strip()
+HUB_TOKEN = _default_hub_token()
 HUB_CLIENT_ID = os.getenv("HUB_MCP_CLIENT_ID", _default_client_id()).strip()
 HUB_TIMEOUT_SECONDS = float(os.getenv("HUB_MCP_TIMEOUT_SECONDS", "20"))
 HUB_DEFAULT_EXECUTE_METHOD = os.getenv("HUB_MCP_DEFAULT_EXECUTE_METHOD", "").strip()
@@ -47,6 +66,10 @@ def _health_request() -> dict[str, Any]:
 
 
 def _hub_request(method: str, path: str, payload: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    if not HUB_TOKEN:
+        raise RuntimeError(
+            "Hub token is not configured. Set HUB_MCP_HUB_TOKEN or ensure HUB_AUTH_TOKEN_FILE points to a valid token file."
+        )
     url = f"{HUB_URL}{path}"
     headers = {"X-Hub-Token": HUB_TOKEN}
 
@@ -121,6 +144,7 @@ def select_project(
     tags: Optional[list[str]] = None,
     most_recent: bool = False,
     auto_launch: bool = True,
+    attach_if_running: bool = True,
     launch_headless: bool = False,
     execute_method: str = "",
 ) -> dict[str, Any]:
@@ -137,6 +161,7 @@ def select_project(
         "tags": tags or [],
         "most_recent": most_recent,
         "auto_launch": auto_launch,
+        "attach_if_running": attach_if_running,
         "launch_headless": launch_headless,
         "execute_method": resolved_execute_method,
     }
@@ -208,6 +233,22 @@ def kill_session(session_id: str = "", force: bool = False) -> dict[str, Any]:
         state.active_session_id = None
         state.active_project_id = None
     return {"killed_session": session, "active_session_id": state.active_session_id}
+
+
+@mcp.tool()
+def focus_unity_window(session_id: str = "") -> dict[str, Any]:
+    """
+    Bring the Unity Editor window for a session to the foreground.
+
+    If session_id is omitted, uses the current active session.
+    """
+    sid = _resolve_session_id(session_id.strip() or None)
+    response = _hub_request("POST", f"/sessions/{sid}/focus")
+    return {
+        "session_id": sid,
+        "focused": bool(response.get("ok", False)),
+        "unity_pid": response.get("unity_pid"),
+    }
 
 
 @mcp.tool()

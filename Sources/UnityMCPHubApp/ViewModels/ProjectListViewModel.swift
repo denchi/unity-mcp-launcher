@@ -16,6 +16,7 @@ final class ProjectListViewModel: ObservableObject {
                 selectedUnityLaunchVersion = ""
                 Task {
                     await refreshSelectedProjectUnityVersion()
+                    await refreshSelectedProjectRuntimeState()
                 }
             }
         }
@@ -26,6 +27,7 @@ final class ProjectListViewModel: ObservableObject {
     @Published var alertData: AlertData?
     @Published var isBusy = false
     @Published private(set) var activeSessionsByProjectID: [String: HubSessionRecord] = [:]
+    @Published private(set) var runningUnityPIDsByProjectID: [String: Int] = [:]
     @Published var lastSyncAt: Date?
     @Published var hubRuntimeStatus: String = "Idle"
     @Published var forwardTestResult: String = ""
@@ -48,6 +50,7 @@ final class ProjectListViewModel: ObservableObject {
 
     private let hubClient: HubClient
     private let processManager: HubProcessManager
+    private let tokenStore: HubAuthTokenStore
     private let defaults: UserDefaults
     private var sessionPollTasksBySessionID: [String: Task<Void, Never>] = [:]
 
@@ -63,14 +66,23 @@ final class ProjectListViewModel: ObservableObject {
     init(
         hubClient: HubClient = HubClient(),
         processManager: HubProcessManager = HubProcessManager(),
+        tokenStore: HubAuthTokenStore = HubAuthTokenStore(),
         defaults: UserDefaults = .standard
     ) {
         self.hubClient = hubClient
         self.processManager = processManager
+        self.tokenStore = tokenStore
         self.defaults = defaults
 
         hubBaseURL = defaults.string(forKey: Keys.hubBaseURL) ?? "http://127.0.0.1:8787"
-        hubToken = defaults.string(forKey: Keys.hubToken) ?? "dev-shared-secret"
+        let legacyToken = defaults.string(forKey: Keys.hubToken)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let legacyToken, !legacyToken.isEmpty {
+            _ = tokenStore.save(legacyToken)
+            defaults.removeObject(forKey: Keys.hubToken)
+            hubToken = legacyToken
+        } else {
+            hubToken = tokenStore.loadOrCreate()
+        }
         clientID = defaults.string(forKey: Keys.clientID) ?? Host.current().localizedName?.replacingOccurrences(of: " ", with: "-").lowercased() ?? "mac-client"
         defaultExecuteMethod = defaults.string(forKey: Keys.defaultExecuteMethod) ?? "Mcp.HubBootstrap.Start"
         unityAgentPackageName = defaults.string(forKey: Keys.unityAgentPackageName) ?? ""
@@ -110,6 +122,11 @@ final class ProjectListViewModel: ObservableObject {
         return activeSessionsByProjectID[selected.hubProjectID]
     }
 
+    var selectedProjectRunningUnityPID: Int? {
+        guard let selected = selectedProject else { return nil }
+        return runningUnityPIDsByProjectID[selected.hubProjectID]
+    }
+
     var canLaunchSelectedProject: Bool {
         guard let selected = selectedProject, !isBusy else {
             return false
@@ -122,9 +139,38 @@ final class ProjectListViewModel: ObservableObject {
         return status != "starting" && status != "ready"
     }
 
+    var shouldOfferKillSelectedProjectSession: Bool {
+        guard let selected = selectedProject else { return false }
+        return shouldOfferKill(for: selected)
+    }
+
+    var shouldOfferConnectSelectedProject: Bool {
+        guard let selected = selectedProject, !isBusy else { return false }
+        guard activeSessionsByProjectID[selected.hubProjectID] == nil else { return false }
+        return runningUnityPIDsByProjectID[selected.hubProjectID] != nil
+    }
+
+    func shouldOfferKill(for project: UnityProject) -> Bool {
+        if activeSessionsByProjectID[project.hubProjectID] != nil {
+            return true
+        }
+        return isRunningProjectStatus(project.hubStatus)
+    }
+
+    func shouldOfferConnect(for project: UnityProject) -> Bool {
+        guard !isBusy else { return false }
+        guard activeSessionsByProjectID[project.hubProjectID] == nil else { return false }
+        return runningUnityPIDsByProjectID[project.hubProjectID] != nil
+    }
+
     func saveHubSettings() {
         defaults.set(hubBaseURL.trimmingCharacters(in: .whitespacesAndNewlines), forKey: Keys.hubBaseURL)
-        defaults.set(hubToken.trimmingCharacters(in: .whitespacesAndNewlines), forKey: Keys.hubToken)
+        let normalizedToken = hubToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !normalizedToken.isEmpty {
+            _ = tokenStore.save(normalizedToken)
+            hubToken = normalizedToken
+        }
+        defaults.removeObject(forKey: Keys.hubToken)
         defaults.set(clientID.trimmingCharacters(in: .whitespacesAndNewlines), forKey: Keys.clientID)
         defaults.set(defaultExecuteMethod.trimmingCharacters(in: .whitespacesAndNewlines), forKey: Keys.defaultExecuteMethod)
         defaults.set(unityAgentPackageName.trimmingCharacters(in: .whitespacesAndNewlines), forKey: Keys.unityAgentPackageName)
@@ -155,6 +201,7 @@ final class ProjectListViewModel: ObservableObject {
             hubRuntimeStatus = "Connected"
             await refreshUnityInstallations()
             await refreshAllProjectUnityVersions()
+            await refreshAllProjectRuntimeStates()
             updatePreferredUnityLaunchVersion(force: true)
         } catch {
             showError(title: "Sync Failed", error: error)
@@ -289,6 +336,7 @@ final class ProjectListViewModel: ObservableObject {
                     projectID: selected.hubProjectID
                 )
                 projects.removeAll { $0.id == selected.id }
+                runningUnityPIDsByProjectID.removeValue(forKey: selected.hubProjectID)
                 selectedProjectID = projects.first?.id
                 if let removed = activeSessionsByProjectID.removeValue(forKey: selected.hubProjectID) {
                     stopPollingSession(sessionID: removed.sessionID)
@@ -305,7 +353,32 @@ final class ProjectListViewModel: ObservableObject {
     }
 
     func launchSelectedProject(headless: Bool = false, executeMethod: String? = nil) {
-        guard let selected = selectedProject, canLaunchSelectedProject else { return }
+        guard canLaunchSelectedProject else { return }
+        openSelectedProjectSession(
+            headless: headless,
+            executeMethod: executeMethod,
+            attachIfRunning: true,
+            errorTitle: "Launch Failed"
+        )
+    }
+
+    func connectSelectedRunningProject(executeMethod: String? = nil) {
+        guard shouldOfferConnectSelectedProject else { return }
+        openSelectedProjectSession(
+            headless: false,
+            executeMethod: executeMethod,
+            attachIfRunning: true,
+            errorTitle: "Connect Failed"
+        )
+    }
+
+    private func openSelectedProjectSession(
+        headless: Bool,
+        executeMethod: String?,
+        attachIfRunning: Bool,
+        errorTitle: String
+    ) {
+        guard let selected = selectedProject else { return }
 
         Task {
             setBusy(true)
@@ -324,6 +397,7 @@ final class ProjectListViewModel: ObservableObject {
                         mostRecent: false,
                         autoLaunch: true,
                         launchHeadless: headless,
+                        attachIfRunning: attachIfRunning,
                         executeMethod: executeMethod ?? normalizedDefaultExecuteMethod(),
                         unityVersion: normalizedUnityVersion(selectedUnityLaunchVersion)
                     )
@@ -338,24 +412,35 @@ final class ProjectListViewModel: ObservableObject {
                 availableToolNames = []
                 selectedToolName = ""
                 startSessionPolling(sessionID: response.session.sessionID, projectID: response.session.projectID)
+                await refreshProjectRuntimeState(projectID: selected.hubProjectID, reportFailure: false)
                 hubRuntimeStatus = "Connected"
             } catch {
-                showError(title: "Launch Failed", error: error)
+                showError(title: errorTitle, error: error)
             }
         }
     }
 
     func killSelectedProjectSession() {
-        guard let selected = selectedProject,
-              let session = activeSessionsByProjectID[selected.hubProjectID]
-        else {
-            return
-        }
+        guard let selected = selectedProject else { return }
 
         Task {
             setBusy(true)
             defer { setBusy(false) }
             do {
+                let session: HubSessionRecord?
+                if let active = activeSessionsByProjectID[selected.hubProjectID] {
+                    session = active
+                } else {
+                    session = try await resolveActiveSessionForProject(projectID: selected.hubProjectID)
+                }
+
+                guard let session else {
+                    if let index = projects.firstIndex(where: { $0.hubProjectID == selected.hubProjectID }) {
+                        projects[index].hubStatus = "dead"
+                    }
+                    return
+                }
+
                 let dead = try await hubClient.killSession(
                     baseURL: hubBaseURL,
                     token: hubToken,
@@ -665,6 +750,41 @@ final class ProjectListViewModel: ObservableObject {
         }
     }
 
+    private func refreshAllProjectRuntimeStates() async {
+        runningUnityPIDsByProjectID = [:]
+        let projectIDs = projects.map(\.hubProjectID)
+        for projectID in projectIDs {
+            await refreshProjectRuntimeState(projectID: projectID, reportFailure: false)
+        }
+    }
+
+    private func refreshSelectedProjectRuntimeState() async {
+        guard let project = selectedProject else {
+            return
+        }
+        await refreshProjectRuntimeState(projectID: project.hubProjectID, reportFailure: false)
+    }
+
+    private func refreshProjectRuntimeState(projectID: String, reportFailure: Bool) async {
+        do {
+            let runtimeState = try await hubClient.getProjectRuntimeState(
+                baseURL: hubBaseURL,
+                token: hubToken,
+                projectID: projectID
+            )
+            if runtimeState.unityRunning, let unityPID = runtimeState.unityPID {
+                runningUnityPIDsByProjectID[projectID] = unityPID
+            } else {
+                runningUnityPIDsByProjectID.removeValue(forKey: projectID)
+            }
+        } catch {
+            runningUnityPIDsByProjectID.removeValue(forKey: projectID)
+            if reportFailure {
+                showError(title: "Runtime Detection Failed", error: error)
+            }
+        }
+    }
+
     private func isUnityVersionInstalled(_ version: String) -> Bool {
         guard let normalizedTarget = canonicalUnityVersion(version) else {
             return false
@@ -705,6 +825,7 @@ final class ProjectListViewModel: ObservableObject {
         hubRuntimeStatus = "Starting..."
         try await processManager.ensureRunning(
             baseURL: hubBaseURL,
+            hubAuthToken: hubToken.trimmingCharacters(in: .whitespacesAndNewlines),
             defaultExecuteMethod: normalizedDefaultExecuteMethod(),
             unityAgentPackageName: normalizedUnityAgentPackageName(),
             unityAgentPackageGitURL: normalizedUnityAgentPackageGitURL()
@@ -726,6 +847,29 @@ final class ProjectListViewModel: ObservableObject {
     private func normalizedUnityVersion(_ value: String) -> String? {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private func isRunningProjectStatus(_ status: String?) -> Bool {
+        guard let status else { return false }
+        let normalized = status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return normalized == "starting" || normalized == "ready"
+    }
+
+    private func resolveActiveSessionForProject(projectID: String) async throws -> HubSessionRecord? {
+        let sessions = try await hubClient.listSessions(
+            baseURL: hubBaseURL,
+            token: hubToken,
+            includeDead: false
+        )
+
+        if let ready = sessions.first(where: {
+            $0.projectID == projectID && $0.status.lowercased() == "ready"
+        }) {
+            return ready
+        }
+        return sessions.first(where: {
+            $0.projectID == projectID && $0.status.lowercased() != "dead"
+        })
     }
 
     private func applyActiveSessions(_ sessions: [HubSessionRecord]) {
@@ -775,6 +919,7 @@ final class ProjectListViewModel: ObservableObject {
                     if session.status == "dead" {
                         activeSessionsByProjectID.removeValue(forKey: projectID)
                         stopPollingSession(sessionID: sessionID)
+                        await refreshProjectRuntimeState(projectID: projectID, reportFailure: false)
                         return
                     }
                 } catch {
@@ -783,6 +928,7 @@ final class ProjectListViewModel: ObservableObject {
                     }
                     activeSessionsByProjectID.removeValue(forKey: projectID)
                     stopPollingSession(sessionID: sessionID)
+                    await refreshProjectRuntimeState(projectID: projectID, reportFailure: false)
                     return
                 }
 

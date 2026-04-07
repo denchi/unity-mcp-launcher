@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import signal
+import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
@@ -13,7 +14,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, status
 from .config import settings
 from .db import Database
 from .launcher import UnityLaunchError, allocate_loopback_url, launch_unity
-from .launcher import find_running_unity_project_pid
+from .launcher import find_running_unity_project_pid, focus_unity_editor_window
 from .models import (
     ForwardCallRequest,
     ForwardCallResponse,
@@ -24,9 +25,11 @@ from .models import (
     ProjectRecord,
     RegisterAgentRequest,
     RegisterAgentResponse,
+    SessionPublicRecord,
     SelectProjectRequest,
     SelectProjectResponse,
     SessionRecord,
+    ProjectRuntimeStateResponse,
     UnityInstallationRecord,
     UnityInstallRequest,
     UnityLocalInstallRequest,
@@ -45,7 +48,7 @@ from .unity_registry import (
     remove_custom_installation_by_path,
 )
 
-app = FastAPI(title="Unity MCP Hub", version="0.1.4")
+app = FastAPI(title="Unity MCP Hub", version="0.1.5")
 db = Database(settings.database_path)
 repo = HubRepository(db)
 logger = logging.getLogger("uvicorn.error")
@@ -91,6 +94,62 @@ def launch_env_for_session(session: SessionRecord, runtime_server_url: str) -> d
     }
 
 
+def run_session_launch(
+    session: SessionRecord,
+    project: ProjectRecord,
+    launch_headless: bool,
+    execute_method: Optional[str],
+) -> None:
+    latest = repo.get_session(session.session_id)
+    if not latest or latest.status == "dead":
+        return
+
+    try:
+        runtime_server_url = allocate_loopback_url("/mcp")
+        logger.info(
+            "launch session=%s project=%s mode=hub runtime_server_url=%s",
+            session.session_id,
+            project.project_id,
+            runtime_server_url,
+        )
+        unity_pid = launch_unity(
+            project,
+            launch_headless,
+            resolve_execute_method(execute_method),
+            env_overrides=launch_env_for_session(session, runtime_server_url),
+            package_name=settings.unity_agent_package_name,
+            package_git_url=settings.unity_agent_package_git_url,
+        )
+        current = repo.get_session(session.session_id)
+        if not current or current.status == "dead":
+            try:
+                terminate_unity_process(unity_pid)
+            except HTTPException:
+                logger.warning("failed to terminate orphaned Unity process pid=%s", unity_pid)
+            return
+        repo.set_session_unity_pid(session.session_id, unity_pid)
+    except UnityLaunchError as exc:
+        logger.warning("launch failed session=%s project=%s: %s", session.session_id, project.project_id, exc)
+        repo.kill_session(session.session_id)
+    except Exception as exc:  # pragma: no cover - defensive guard for background launch thread
+        logger.exception("unexpected launch error session=%s project=%s: %s", session.session_id, project.project_id, exc)
+        repo.kill_session(session.session_id)
+
+
+def schedule_session_launch(
+    session: SessionRecord,
+    project: ProjectRecord,
+    launch_headless: bool,
+    execute_method: Optional[str],
+) -> None:
+    threading.Thread(
+        target=run_session_launch,
+        args=(session, project, launch_headless, execute_method),
+        daemon=True,
+        name=f"launch-{session.session_id[:8]}",
+    ).start()
+
+
 def resolve_agent_health_url(session: SessionRecord) -> Optional[str]:
     if isinstance(session.tool_manifest, dict):
         health_url = session.tool_manifest.get("health_url")
@@ -125,6 +184,7 @@ def run_maintenance() -> None:
                 repo.extend_lease(session.session_id, session_lease_expiry())
             else:
                 repo.kill_session(session.session_id)
+    repo.refresh_project_statuses()
 
 
 def get_live_session(session_id: str) -> SessionRecord:
@@ -156,6 +216,22 @@ def resolve_forward_base(session: SessionRecord, payload: ForwardCallRequest) ->
     if not session.agent_endpoint:
         raise HTTPException(status_code=409, detail="agent endpoint unavailable")
     return session.agent_endpoint, "agent"
+
+
+def to_session_public(session: SessionRecord) -> SessionPublicRecord:
+    return SessionPublicRecord(
+        session_id=session.session_id,
+        client_id=session.client_id,
+        project_id=session.project_id,
+        status=session.status,
+        lease_expires_at=session.lease_expires_at,
+        agent_endpoint=session.agent_endpoint,
+        unity_pid=session.unity_pid,
+        tool_manifest=session.tool_manifest,
+        heartbeat_at=session.heartbeat_at,
+        created_at=session.created_at,
+        updated_at=session.updated_at,
+    )
 
 
 def list_unity_installation_records() -> list[UnityInstallationRecord]:
@@ -202,6 +278,27 @@ def resolve_project_for_launch(project: ProjectRecord, unity_version: Optional[s
     return project.copy(update={"unity_path": str(installation.unity_executable)})
 
 
+def resolve_project_unity_path(payload: ProjectCreateRequest) -> str:
+    explicit_path = payload.unity_path.strip()
+    if explicit_path:
+        return explicit_path
+
+    detected_version = detect_project_unity_version(payload.project_path)
+    if not detected_version:
+        return ""
+
+    installation = find_unity_installation_by_version(
+        detected_version,
+        settings.unity_install_root,
+        settings.unity_custom_installations_path,
+        settings.unity_hidden_installations_path,
+    )
+    if not installation:
+        return ""
+
+    return str(installation.unity_executable)
+
+
 def is_within_starting_grace(session: SessionRecord, now: Optional[datetime] = None) -> bool:
     if session.status != "starting":
         return False
@@ -223,6 +320,22 @@ def terminate_unity_process(unity_pid: Optional[int]) -> None:
         raise HTTPException(status_code=500, detail=f"failed to terminate Unity process {unity_pid}: {exc}") from exc
 
 
+def resolve_session_unity_pid(session: SessionRecord) -> Optional[int]:
+    if session.unity_pid:
+        return session.unity_pid
+
+    project = repo.get_project(session.project_id)
+    if not project:
+        return None
+
+    detected_pid = find_running_unity_project_pid(project.project_path)
+    if not detected_pid:
+        return None
+
+    repo.set_session_unity_pid(session.session_id, detected_pid)
+    return detected_pid
+
+
 @app.get("/health", response_model=HealthResponse)
 def health() -> HealthResponse:
     return HealthResponse(status="ok", now=datetime.now(timezone.utc))
@@ -230,7 +343,8 @@ def health() -> HealthResponse:
 
 @app.post("/projects", response_model=ProjectRecord, dependencies=[Depends(require_auth)])
 def upsert_project(payload: ProjectCreateRequest) -> ProjectRecord:
-    return repo.upsert_project(payload)
+    normalized_payload = payload.copy(update={"unity_path": resolve_project_unity_path(payload)})
+    return repo.upsert_project(normalized_payload)
 
 
 @app.get("/projects", response_model=list[ProjectRecord], dependencies=[Depends(require_auth)])
@@ -255,6 +369,16 @@ def project_unity_version(project_id: str) -> UnityVersionResponse:
 
     detected = detect_project_unity_version(project.project_path)
     return UnityVersionResponse(unity_version=detected)
+
+
+@app.get("/projects/{project_id}/runtime-state", response_model=ProjectRuntimeStateResponse, dependencies=[Depends(require_auth)])
+def project_runtime_state(project_id: str) -> ProjectRuntimeStateResponse:
+    project = repo.get_project(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="project not found")
+
+    unity_pid = find_running_unity_project_pid(project.project_path)
+    return ProjectRuntimeStateResponse(unity_running=unity_pid is not None, unity_pid=unity_pid)
 
 
 @app.get("/unity/installations", response_model=list[UnityInstallationRecord], dependencies=[Depends(require_auth)])
@@ -340,88 +464,91 @@ def select_project(payload: SelectProjectRequest) -> SelectProjectResponse:
     if not project:
         raise HTTPException(status_code=404, detail="no project matches selection")
 
-    active = repo.get_active_session_for_project(project.project_id)
-    if active:
-        reused = repo.extend_lease(active.session_id, session_lease_expiry()) or active
-        return SelectProjectResponse(session=reused, launched=False)
-
     # Launch requests from the app should start Unity explicitly; persisted project status
     # can be stale after crashes/restarts, so do not gate launch on "ready".
     launched = payload.auto_launch
+    attached_to_running = False
+    existing_pid = None
+    launch_project = project
     if launched:
         existing_pid = find_running_unity_project_pid(project.project_path)
         if existing_pid is not None:
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    f"Unity project is already running (pid {existing_pid}) for {project.project_path}. "
-                    "Force quit the existing process before launching again."
-                ),
-            )
+            if payload.attach_if_running:
+                launched = False
+                attached_to_running = True
+            else:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"Unity project is already running (pid {existing_pid}) for {project.project_path}. "
+                        "Force quit the existing process before launching again."
+                    ),
+                )
+        else:
+            launch_project = resolve_project_for_launch(project, payload.unity_version)
 
-    session = repo.create_session(
+    session, created = repo.create_or_reuse_active_session(
         client_id=payload.client_id,
         project_id=project.project_id,
-        status="starting" if launched else "ready",
+        status="starting" if launched or attached_to_running else "ready",
         lease_expires_at=session_lease_expiry(),
     )
+    if not created:
+        return SelectProjectResponse(
+            session=to_session_public(session),
+            launched=False,
+            attached_to_running=False,
+        )
+
+    if attached_to_running and existing_pid is not None:
+        session = repo.set_session_unity_pid(session.session_id, existing_pid) or session
 
     if launched:
-        try:
-            runtime_server_url = allocate_loopback_url("/mcp")
-            logger.info(
-                "launch session=%s project=%s mode=hub runtime_server_url=%s",
-                session.session_id,
-                project.project_id,
-                runtime_server_url,
-            )
-            unity_pid = launch_unity(
-                resolve_project_for_launch(project, payload.unity_version),
-                payload.launch_headless,
-                resolve_execute_method(payload.execute_method),
-                env_overrides=launch_env_for_session(session, runtime_server_url),
-                package_name=settings.unity_agent_package_name,
-                package_git_url=settings.unity_agent_package_git_url,
-            )
-            session = repo.set_session_unity_pid(session.session_id, unity_pid) or session
-        except UnityLaunchError as exc:
-            repo.kill_session(session.session_id)
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        schedule_session_launch(
+            session=session,
+            project=launch_project,
+            launch_headless=payload.launch_headless,
+            execute_method=payload.execute_method,
+        )
 
-    return SelectProjectResponse(session=session, launched=launched)
+    return SelectProjectResponse(
+        session=to_session_public(session),
+        launched=launched,
+        attached_to_running=attached_to_running,
+    )
 
 
-@app.get("/sessions/{session_id}", response_model=SessionRecord, dependencies=[Depends(require_auth)])
-def get_session(session_id: str) -> SessionRecord:
+@app.get("/sessions/{session_id}", response_model=SessionPublicRecord, dependencies=[Depends(require_auth)])
+def get_session(session_id: str) -> SessionPublicRecord:
     run_maintenance()
     session = repo.get_session(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="session not found")
-    return session
+    return to_session_public(session)
 
 
-@app.get("/sessions", response_model=list[SessionRecord], dependencies=[Depends(require_auth)])
-def list_sessions(client_id: Optional[str] = None, include_dead: bool = False) -> list[SessionRecord]:
+@app.get("/sessions", response_model=list[SessionPublicRecord], dependencies=[Depends(require_auth)])
+def list_sessions(client_id: Optional[str] = None, include_dead: bool = False) -> list[SessionPublicRecord]:
     run_maintenance()
-    return repo.list_sessions(client_id=client_id, include_dead=include_dead)
+    return [to_session_public(session) for session in repo.list_sessions(client_id=client_id, include_dead=include_dead)]
 
 
-@app.post("/sessions/{session_id}/renew", response_model=SessionRecord, dependencies=[Depends(require_auth)])
-def renew_session(session_id: str) -> SessionRecord:
+@app.post("/sessions/{session_id}/renew", response_model=SessionPublicRecord, dependencies=[Depends(require_auth)])
+def renew_session(session_id: str) -> SessionPublicRecord:
     session = get_live_session(session_id)
     updated = repo.extend_lease(session.session_id, session_lease_expiry())
     if not updated:
         raise HTTPException(status_code=404, detail="session not found")
-    return updated
+    return to_session_public(updated)
 
 
-@app.post("/sessions/{session_id}/kill", response_model=SessionRecord, dependencies=[Depends(require_auth)])
-def kill_session(session_id: str, force: bool = False, terminate_process: bool = False) -> SessionRecord:
+@app.post("/sessions/{session_id}/kill", response_model=SessionPublicRecord, dependencies=[Depends(require_auth)])
+def kill_session(session_id: str, force: bool = False, terminate_process: bool = False) -> SessionPublicRecord:
     current = repo.get_session(session_id)
     if not current:
         raise HTTPException(status_code=404, detail="session not found")
     if not force and is_within_starting_grace(current):
-        return current
+        return to_session_public(current)
 
     if terminate_process:
         terminate_unity_process(current.unity_pid)
@@ -429,7 +556,26 @@ def kill_session(session_id: str, force: bool = False, terminate_process: bool =
     session = repo.kill_session(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="session not found")
-    return session
+    return to_session_public(session)
+
+
+@app.post("/sessions/{session_id}/focus", dependencies=[Depends(require_auth)])
+def focus_session_unity(session_id: str) -> dict:
+    session = get_live_session(session_id)
+    unity_pid = resolve_session_unity_pid(session)
+    if not unity_pid:
+        raise HTTPException(status_code=409, detail="unity process is not running for this session")
+
+    try:
+        focus_unity_editor_window(unity_pid)
+    except UnityLaunchError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    return {
+        "ok": True,
+        "session_id": session.session_id,
+        "unity_pid": unity_pid,
+    }
 
 
 @app.post("/agents/register", response_model=RegisterAgentResponse, dependencies=[Depends(require_auth)])

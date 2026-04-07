@@ -10,7 +10,7 @@ class ProjectCreateRequest(BaseModel):
     project_id: str = Field(min_length=1)
     name: str = Field(min_length=1)
     project_path: str = Field(min_length=1)
-    unity_path: str = Field(min_length=1)
+    unity_path: str = ""
     tags: list[str] = Field(default_factory=list)
 
 
@@ -34,6 +34,7 @@ class SelectProjectRequest(BaseModel):
     most_recent: bool = False
     auto_launch: bool = True
     launch_headless: bool = False
+    attach_if_running: bool = True
     execute_method: Optional[str] = None
     unity_version: Optional[str] = None
 
@@ -54,9 +55,24 @@ class SessionRecord(BaseModel):
     updated_at: datetime
 
 
+class SessionPublicRecord(BaseModel):
+    session_id: str
+    client_id: str
+    project_id: str
+    status: Literal["starting", "ready", "dead"]
+    lease_expires_at: datetime
+    agent_endpoint: Optional[str] = None
+    unity_pid: Optional[int] = None
+    tool_manifest: dict[str, Any] = Field(default_factory=dict)
+    heartbeat_at: Optional[datetime] = None
+    created_at: datetime
+    updated_at: datetime
+
+
 class SelectProjectResponse(BaseModel):
-    session: SessionRecord
+    session: SessionPublicRecord
     launched: bool
+    attached_to_running: bool = False
 
 
 class RegisterAgentRequest(BaseModel):
@@ -122,3 +138,8 @@ class UnityLocalInstallRequest(BaseModel):
 
 class UnityVersionResponse(BaseModel):
     unity_version: Optional[str] = None
+
+
+class ProjectRuntimeStateResponse(BaseModel):
+    unity_running: bool = False
+    unity_pid: Optional[int] = None
