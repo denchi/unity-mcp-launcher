@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from datetime import datetime, timezone
 from typing import Optional
 from uuid import uuid4
@@ -134,11 +135,103 @@ class HubRepository:
                     stamp,
                 ),
             )
-            conn.execute(
-                "UPDATE projects SET status = ?, updated_at = ? WHERE project_id = ?",
-                ("starting" if status == "starting" else "ready", stamp, project_id),
-            )
+            self._refresh_project_status(conn, project_id, stamp)
         return self.get_session(session_id)
+
+    def create_or_reuse_active_session(
+        self,
+        client_id: str,
+        project_id: str,
+        status: str,
+        lease_expires_at: datetime,
+    ) -> tuple[SessionRecord, bool]:
+        """Create a session unless a non-dead project session already exists.
+
+        Returns (session, created_new).
+        """
+        stamp = now_iso()
+        with self.db.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            existing = conn.execute(
+                """
+                SELECT *
+                FROM sessions
+                WHERE project_id = ?
+                  AND status != 'dead'
+                ORDER BY
+                    CASE status
+                        WHEN 'ready' THEN 0
+                        WHEN 'starting' THEN 1
+                        ELSE 2
+                    END ASC,
+                    updated_at DESC
+                LIMIT 1
+                """,
+                (project_id,),
+            ).fetchone()
+            if existing:
+                conn.execute(
+                    "UPDATE sessions SET lease_expires_at = ?, updated_at = ? WHERE session_id = ?",
+                    (lease_expires_at.isoformat(), stamp, existing["session_id"]),
+                )
+                row = conn.execute(
+                    "SELECT * FROM sessions WHERE session_id = ?",
+                    (existing["session_id"],),
+                ).fetchone()
+                return self._session_from_row(row), False
+
+            session_id = str(uuid4())
+            launch_token = str(uuid4())
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO sessions (
+                        session_id, client_id, project_id, status, lease_expires_at,
+                        launch_token, agent_token, agent_endpoint, unity_pid, tool_manifest_json,
+                        heartbeat_at, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, '{}', NULL, ?, ?)
+                    """,
+                    (
+                        session_id,
+                        client_id,
+                        project_id,
+                        status,
+                        lease_expires_at.isoformat(),
+                        launch_token,
+                        stamp,
+                        stamp,
+                    ),
+                )
+            except sqlite3.IntegrityError:
+                existing_after_error = conn.execute(
+                    """
+                    SELECT *
+                    FROM sessions
+                    WHERE project_id = ?
+                      AND status != 'dead'
+                    ORDER BY updated_at DESC
+                    LIMIT 1
+                    """,
+                    (project_id,),
+                ).fetchone()
+                if not existing_after_error:
+                    raise
+                conn.execute(
+                    "UPDATE sessions SET lease_expires_at = ?, updated_at = ? WHERE session_id = ?",
+                    (lease_expires_at.isoformat(), stamp, existing_after_error["session_id"]),
+                )
+                row = conn.execute(
+                    "SELECT * FROM sessions WHERE session_id = ?",
+                    (existing_after_error["session_id"],),
+                ).fetchone()
+                return self._session_from_row(row), False
+
+            self._refresh_project_status(conn, project_id, stamp)
+            row = conn.execute(
+                "SELECT * FROM sessions WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+            return self._session_from_row(row), True
 
     def set_session_unity_pid(self, session_id: str, unity_pid: int) -> Optional[SessionRecord]:
         with self.db.connect() as conn:
@@ -276,10 +369,7 @@ class HubRepository:
                     "UPDATE sessions SET status = 'dead', updated_at = ? WHERE session_id = ?",
                     (stamp, session["session_id"]),
                 )
-                conn.execute(
-                    "UPDATE projects SET status = 'dead', updated_at = ? WHERE project_id = ?",
-                    (stamp, session["project_id"]),
-                )
+                self._refresh_project_status(conn, session["project_id"], stamp)
             return len(sessions)
 
     def expire_stale_heartbeats(self, stale_before: datetime) -> int:
@@ -300,10 +390,7 @@ class HubRepository:
                     "UPDATE sessions SET status = 'dead', updated_at = ? WHERE session_id = ?",
                     (stamp, session["session_id"]),
                 )
-                conn.execute(
-                    "UPDATE projects SET status = 'dead', updated_at = ? WHERE project_id = ?",
-                    (stamp, session["project_id"]),
-                )
+                self._refresh_project_status(conn, session["project_id"], stamp)
             return len(sessions)
 
     def kill_session(self, session_id: str) -> Optional[SessionRecord]:
@@ -327,11 +414,24 @@ class HubRepository:
                 """,
                 (stamp, session_id),
             )
-            conn.execute(
-                "UPDATE projects SET status = 'dead', updated_at = ? WHERE project_id = ?",
-                (stamp, row["project_id"]),
-            )
+            self._refresh_project_status(conn, row["project_id"], stamp)
         return self.get_session(session_id)
+
+    def refresh_project_statuses(self) -> int:
+        stamp = now_iso()
+        updates = 0
+        with self.db.connect() as conn:
+            project_rows = conn.execute("SELECT project_id, status FROM projects").fetchall()
+            for project in project_rows:
+                desired = self._derive_project_status(conn, project["project_id"])
+                if project["status"] == desired:
+                    continue
+                conn.execute(
+                    "UPDATE projects SET status = ?, updated_at = ? WHERE project_id = ?",
+                    (desired, stamp, project["project_id"]),
+                )
+                updates += 1
+        return updates
 
     def get_active_session_for_project(self, project_id: str) -> Optional[SessionRecord]:
         with self.db.connect() as conn:
@@ -422,3 +522,29 @@ class HubRepository:
             created_at=parse_dt(row["created_at"]),
             updated_at=parse_dt(row["updated_at"]),
         )
+
+    def _refresh_project_status(self, conn, project_id: str, stamp: str) -> None:
+        conn.execute(
+            "UPDATE projects SET status = ?, updated_at = ? WHERE project_id = ?",
+            (self._derive_project_status(conn, project_id), stamp, project_id),
+        )
+
+    def _derive_project_status(self, conn, project_id: str) -> str:
+        session_rows = conn.execute(
+            """
+            SELECT status
+            FROM sessions
+            WHERE project_id = ?
+              AND status != 'dead'
+            """,
+            (project_id,),
+        ).fetchall()
+        if not session_rows:
+            return "idle"
+
+        statuses = {row["status"] for row in session_rows}
+        if "ready" in statuses:
+            return "ready"
+        if "starting" in statuses:
+            return "starting"
+        return "idle"

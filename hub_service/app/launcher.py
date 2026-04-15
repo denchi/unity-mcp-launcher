@@ -16,6 +16,33 @@ class UnityLaunchError(Exception):
     pass
 
 
+def focus_unity_editor_window(unity_pid: Optional[int]) -> None:
+    if not unity_pid:
+        raise UnityLaunchError("Unity process id is required to focus the Unity window.")
+
+    script = (
+        'tell application "System Events" '
+        f'to set frontmost of first process whose unix id is {unity_pid} to true'
+    )
+    try:
+        result = subprocess.run(
+            ["osascript", "-e", script],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise UnityLaunchError(f"Failed to focus Unity window: {exc}") from exc
+
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip()
+        suffix = f" {detail}" if detail else ""
+        raise UnityLaunchError(
+            f"Failed to focus Unity window for pid {unity_pid}.{suffix}"
+        )
+
+
 def normalize_project_path(project_path: str) -> str:
     return os.path.normpath(str(Path(project_path).expanduser().resolve(strict=False)))
 

@@ -68,7 +68,10 @@ struct UnityProject: Identifiable, Codable, Hashable {
         }
 
         let normalizedUnityPath = unityPath.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !normalizedUnityPath.isEmpty, !normalizedUnityPath.contains("\u{0000}") else {
+        if normalizedUnityPath.isEmpty {
+            return .unknown
+        }
+        guard !normalizedUnityPath.contains("\u{0000}") else {
             return .missingUnityPath
         }
         guard fileManager.isExecutableFile(atPath: normalizedUnityPath) else {
