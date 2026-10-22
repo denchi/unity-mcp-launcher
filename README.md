@@ -1,8 +1,6 @@
 # Unity MCP Hub
 
-macOS menu-bar app that registers Unity projects, launches them in a matching local Unity Editor, and exposes the active session to Cursor, Codex, and other MCP clients through a local stdio gateway.
-
-Unity MCP Hub is a macOS app that manages Unity projects and launches them in a hub-based MCP workflow.
+Unity MCP Hub is a macOS menu-bar app for registering Unity projects, launching them in Unity Editor, and exposing the active session through a local MCP gateway.
 
 It provides:
 
